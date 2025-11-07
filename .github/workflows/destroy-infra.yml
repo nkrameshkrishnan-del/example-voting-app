@@ -47,6 +47,18 @@ jobs:
                   aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
                   aws-region: ${{ env.AWS_REGION }}
 
+            - name: Install eksctl
+              run: |
+                  curl -sSfL https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz -o eksctl.tar.gz
+                  tar -xzf eksctl.tar.gz -C /tmp
+                  sudo mv /tmp/eksctl /usr/local/bin
+                  eksctl version
+
+            - name: Install kubectl
+              uses: azure/setup-kubectl@v3
+              with:
+                  version: "v1.28.0"
+
             - name: Ensure script executable
               run: chmod +x scripts/destroy-infra.sh
 
