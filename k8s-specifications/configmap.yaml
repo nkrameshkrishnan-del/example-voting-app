@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  # AWS ElastiCache Redis endpoint (replace with your ElastiCache endpoint)
+  redis_host: "your-elasticache-cluster.xxxxx.cache.amazonaws.com"
+  redis_port: "6379"
+  redis_ssl: "true"
+  
+  # AWS RDS PostgreSQL endpoint (replace with your RDS endpoint)
+  postgres_host: "your-rds-instance.xxxxx.rds.amazonaws.com"

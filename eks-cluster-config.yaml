@@ -1,0 +1,134 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: voting-app-cluster
+  region: us-east-1
+  version: "1.28"
+
+# VPC Configuration
+# Option 1: Create new VPC (uncomment below)
+# vpc:
+#   cidr: 10.0.0.0/16
+#   nat:
+#     gateway: Single
+
+# Option 2: Use existing VPC (uncomment and configure below)
+# vpc:
+#   id: "vpc-xxxxx"
+#   subnets:
+#     private:
+#       us-east-1a:
+#         id: "subnet-xxxxx"
+#       us-east-1b:
+#         id: "subnet-xxxxx"
+#     public:
+#       us-east-1a:
+#         id: "subnet-xxxxx"
+#       us-east-1b:
+#         id: "subnet-xxxxx"
+
+# IAM OIDC Provider (required for IRSA and GitHub Actions)
+iam:
+  withOIDC: true
+  serviceAccounts:
+    # Add service accounts with IAM roles here
+    - metadata:
+        name: aws-load-balancer-controller
+        namespace: kube-system
+      wellKnownPolicies:
+        awsLoadBalancerController: true
+
+# Managed Node Groups
+managedNodeGroups:
+  - name: voting-app-nodes
+    instanceType: t3.medium
+    desiredCapacity: 3
+    minSize: 2
+    maxSize: 5
+    volumeSize: 20
+    volumeType: gp3
+    privateNetworking: true
+    
+    labels:
+      role: worker
+      environment: production
+      app: voting-app
+    
+    tags:
+      Environment: production
+      Application: voting-app
+      ManagedBy: eksctl
+    
+    # IAM policies for nodes
+    iam:
+      withAddonPolicies:
+        imageBuilder: true      # ECR access
+        autoScaler: true        # Cluster autoscaler
+        cloudWatch: true        # CloudWatch logging
+        ebs: true              # EBS CSI driver
+        efs: true              # EFS CSI driver
+        albIngress: true       # ALB Ingress Controller
+        externalDNS: true      # External DNS
+    
+    # SSH access (optional, for debugging)
+    ssh:
+      allow: false
+      # publicKeyName: my-key-pair
+    
+    # Spot instances for cost savings (optional)
+    # instancesDistribution:
+    #   maxPrice: 0.068
+    #   instanceTypes: ["t3.medium", "t3a.medium"]
+    #   onDemandBaseCapacity: 1
+    #   onDemandPercentageAboveBaseCapacity: 0
+    #   spotInstancePools: 2
+
+# Additional node group for system components (optional)
+# - name: system-nodes
+#   instanceType: t3.small
+#   desiredCapacity: 2
+#   minSize: 2
+#   maxSize: 2
+#   privateNetworking: true
+#   labels:
+#     role: system
+#   taints:
+#     - key: CriticalAddonsOnly
+#       value: "true"
+#       effect: NoSchedule
+
+# Add-ons
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+  - name: aws-ebs-csi-driver
+    version: latest
+    wellKnownPolicies:
+      ebsCSIController: true
+
+# CloudWatch logging
+cloudWatch:
+  clusterLogging:
+    enableTypes:
+      - api
+      - audit
+      - authenticator
+      - controllerManager
+      - scheduler
+    logRetentionInDays: 7
+
+# Git-based configuration (for GitOps with Flux)
+# gitops:
+#   flux:
+#     gitProvider: github
+#     flags:
+#       owner: your-github-org
+#       repository: your-repo
+#       private: true
+#       branch: main
+#       path: k8s-specifications
