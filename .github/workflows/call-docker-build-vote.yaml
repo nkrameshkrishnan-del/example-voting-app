@@ -1,82 +1,79 @@
-name: Build Vote
-# template source: https://github.com/dockersamples/.github/blob/main/templates/call-docker-build.yaml
+name: Build Vote (ECR Only)
 
 on:
-  # we want pull requests so we can build(test) but not push to image registry
   push:
-    branches:
-      - 'main'
-    # only build when important files change
+    branches: ["main"]
     paths:
-      - 'vote/**'
-      - '.github/workflows/call-docker-build-vote.yaml'
+      - "vote/**"
+      - ".github/workflows/call-docker-build-vote.yaml"
   pull_request:
-    branches:
-      - 'main'
-    # only build when important files change
+    branches: ["main"]
     paths:
-      - 'vote/**'
-      - '.github/workflows/call-docker-build-vote.yaml'
+      - "vote/**"
+      - ".github/workflows/call-docker-build-vote.yaml"
+  workflow_dispatch:
+    inputs:
+      force_latest:
+        description: "Force latest tag even if not default branch"
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  SERVICE_NAME: vote
 
 jobs:
-  call-docker-build:
-
-    name: Vote Call Docker Build
-
-    uses: dockersamples/.github/.github/workflows/reusable-docker-build.yaml@main
-
+  build-vote:
+    name: Build & Push vote image to ECR
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # needed to push docker image to ghcr.io
-      pull-requests: write # needed to create and update comments in PRs
-    
-    secrets:
 
-      # Only needed if with:dockerhub-enable is true below
-      dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # Only needed if with:dockerhub-enable is true below
-      dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    with:
-      
-      ### REQUIRED
-      ### ENABLE ONE OR BOTH REGISTRIES
-      ### tell docker where to push.
-      ### NOTE if Docker Hub is set to true, you must set secrets above and also add account/repo/tags below
-      dockerhub-enable: true
-      ghcr-enable: true
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      ### REQUIRED 
-      ### A list of the account/repo names for docker build. List should match what's enabled above
-      ### defaults to:
-      image-names: |
-        ghcr.io/dockersamples/example-voting-app-vote
-        dockersamples/examplevotingapp_vote
-      
-      ### REQUIRED set rules for tagging images, based on special action syntax:
-      ### https://github.com/docker/metadata-action#tags-input
-      ### defaults to:
-      tag-rules: |
-        type=raw,value=latest,enable=${{ endsWith(github.ref, github.event.repository.default_branch) }}
-        type=raw,value=before,enable=${{ endsWith(github.ref, github.event.repository.default_branch) }}
-        type=raw,value=after,enable=${{ endsWith(github.ref, github.event.repository.default_branch) }}
-        type=ref,event=pr
-      
-      ### path to where docker should copy files into image
-      ### defaults to root of repository (.)
-      context: vote
-      
-      ### Dockerfile alternate name. Default is Dockerfile (relative to context path)
-      # file: Containerfile
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      ### build stage to target, defaults to empty, which builds to last stage in Dockerfile
-      # target:
-      
-      ### platforms to build for, defaults to linux/amd64
-      ### other options: linux/amd64,linux/arm64,linux/arm/v7
-      platforms: linux/amd64,linux/arm64,linux/arm/v7
-      
-      ### Create a PR comment with image tags and labels
-      ### defaults to false
-      # comment-enable: false
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.ECR_REGISTRY }}/${{ env.SERVICE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_latest == 'true' || (github.event_name != 'workflow_dispatch' && '{{is_default_branch}}') }}
+
+      - name: Build and push (multi-arch)
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: ./vote
+          file: ./vote/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Show image tags
+        run: 'echo "Published: ${{ steps.meta.outputs.tags }}"'
+
+      - name: Output digest
+        run: 'echo "Digest: ${{ steps.build.outputs.digest }}"'
