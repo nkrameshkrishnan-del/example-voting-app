@@ -1,0 +1,103 @@
+name: Destroy Infrastructure
+
+on:
+    workflow_dispatch:
+        inputs:
+            scope:
+                description: "What to destroy: all | k8s | cluster | ecr | combo (comma-separated)"
+                required: true
+                default: "all"
+            rds_id:
+                description: "Optional RDS instance identifier to delete"
+                required: false
+            elasticache_id:
+                description: "Optional ElastiCache replication group or cluster id"
+                required: false
+            dry_run:
+                description: "Set to true to preview actions only"
+                type: boolean
+                default: false
+            force:
+                description: "Set to true to skip interactive confirmation"
+                type: boolean
+                default: true
+            region_override:
+                description: "Override AWS region (blank to use default)"
+                required: false
+
+env:
+    AWS_REGION: us-east-1
+    EKS_CLUSTER_NAME: voting-app-cluster
+
+permissions:
+    contents: read
+
+jobs:
+    destroy:
+        name: Run destruction script
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Ensure script executable
+              run: chmod +x scripts/destroy-infra.sh
+
+            - name: Parse scope
+              id: scope
+              run: |
+                  SCOPE="${{ github.event.inputs.scope }}"
+                  # Normalize commas & remove spaces
+                  SCOPE_CLEAN=$(echo "$SCOPE" | tr 'A-Z' 'a-z' | tr -d ' ')
+                  echo "scope_clean=$SCOPE_CLEAN" >> $GITHUB_OUTPUT
+
+            - name: Build flags
+              id: flags
+              run: |
+                  FLAGS=""
+                  SCOPE="${{ steps.scope.outputs.scope_clean }}"
+                  if [[ "$SCOPE" == "all" ]]; then FLAGS="--all"; else
+                    IFS=',' read -ra PARTS <<< "$SCOPE"
+                    for part in "${PARTS[@]}"; do
+                      case "$part" in
+                        k8s) FLAGS+=" --k8s" ;;
+                        cluster) FLAGS+=" --cluster" ;;
+                        ecr) FLAGS+=" --ecr" ;;
+                        *) echo "Ignoring unknown scope entry: $part" ;;
+                      esac
+                    done
+                  fi
+                  if [[ "${{ github.event.inputs.rds_id }}" != "" ]]; then FLAGS+=" --rds ${{ github.event.inputs.rds_id }}"; fi
+                  if [[ "${{ github.event.inputs.elasticache_id }}" != "" ]]; then FLAGS+=" --elasticache ${{ github.event.inputs.elasticache_id }}"; fi
+                  if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then FLAGS+=" --dry-run"; fi
+                  if [[ "${{ github.event.inputs.force }}" == "true" ]]; then FLAGS+=" --force"; fi
+                  if [[ "${{ github.event.inputs.region_override }}" != "" ]]; then FLAGS+=" --region ${{ github.event.inputs.region_override }}"; fi
+                  echo "flags=$FLAGS" >> $GITHUB_OUTPUT
+                  echo "Final flags: $FLAGS"
+
+            - name: Destroy infrastructure
+              env:
+                  AWS_REGION: ${{ github.event.inputs.region_override || env.AWS_REGION }}
+                  EKS_CLUSTER_NAME: ${{ env.EKS_CLUSTER_NAME }}
+              run: |
+                  echo "Running destruction with flags: ${{ steps.flags.outputs.flags }}"
+                  ./scripts/destroy-infra.sh ${{ steps.flags.outputs.flags }}
+
+            - name: Summary
+              if: always()
+              run: |
+                  echo "### Destroy Infra Run" >> $GITHUB_STEP_SUMMARY
+                  echo "Scope: ${{ github.event.inputs.scope }}" >> $GITHUB_STEP_SUMMARY
+                  echo "Region: ${{ github.event.inputs.region_override || env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+                  echo "RDS: ${{ github.event.inputs.rds_id || 'none' }}" >> $GITHUB_STEP_SUMMARY
+                  echo "ElastiCache: ${{ github.event.inputs.elasticache_id || 'none' }}" >> $GITHUB_STEP_SUMMARY
+                  echo "Dry run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+                  echo "Force: ${{ github.event.inputs.force }}" >> $GITHUB_STEP_SUMMARY
+                  echo "Flags: ${{ steps.flags.outputs.flags }}" >> $GITHUB_STEP_SUMMARY
