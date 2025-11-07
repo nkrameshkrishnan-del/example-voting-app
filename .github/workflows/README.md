@@ -256,7 +256,7 @@ strategy:
 - Convert `.gitlab-ci.yml` to workflow files
 - Replace `stages` with `jobs`
 - Update secret variable references
-- Adapt artifact handling
+- Adapt artifact handling 
 
 ## Related Documentation
 
