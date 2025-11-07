@@ -42,6 +42,33 @@ jobs:
                   aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
                   aws-region: ${{ env.AWS_REGION }}
 
+            - name: Install eksctl
+              run: |
+                  curl -sSfL https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz -o eksctl.tar.gz
+                  tar -xzf eksctl.tar.gz -C /usr/local/bin
+                  eksctl version
+
+            - name: Ensure EKS cluster exists (idempotent)
+              run: |
+                  set -e
+                  echo "Checking for existing cluster: ${{ env.EKS_CLUSTER_NAME }}"
+                  if eksctl get cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
+                    echo "Cluster already exists. Skipping creation."
+                  else
+                    echo "Cluster not found. Creating using config (if present) or quick defaults..."
+                    if [ -f eks-cluster-config.yaml ]; then
+                      # Prefer explicit config file committed to repo
+                      eksctl create cluster -f eks-cluster-config.yaml
+                    else
+                      # Fallback minimal cluster (2 nodes t3.medium) using default VPC
+                      eksctl create cluster \
+                        --name ${{ env.EKS_CLUSTER_NAME }} \
+                        --region ${{ env.AWS_REGION }} \
+                        --nodes 2 \
+                        --node-type t3.medium
+                    fi
+                  fi
+
             - name: Install kubectl
               uses: azure/setup-kubectl@v3
               with:
