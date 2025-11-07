@@ -1,13 +1,30 @@
-name: CI - Build and Push to ECR
+name: CI - Build & (Conditional) Push to ECR
 
 on:
     push:
         branches:
             - main
             - develop
+        # Only run when relevant paths change (optional fine‑grained filtering)
+        paths:
+            - "vote/**"
+            - "result/**"
+            - "worker/**"
+            - ".github/workflows/ci-build-push.yml"
     pull_request:
         branches:
             - main
+        paths:
+            - "vote/**"
+            - "result/**"
+            - "worker/**"
+            - ".github/workflows/ci-build-push.yml"
+    workflow_dispatch:
+        inputs:
+            force_push:
+                description: "Force pushing images even though this is a manual run on a non-main branch"
+                type: boolean
+                default: false
 
 env:
     AWS_REGION: us-east-1
@@ -15,7 +32,7 @@ env:
 
 jobs:
     build-and-push:
-        name: Build and Push Docker Images
+        name: Build services (push only on main)
         runs-on: ubuntu-latest
         strategy:
             matrix:
@@ -57,21 +74,28 @@ jobs:
               with:
                   images: ${{ env.ECR_REGISTRY }}/${{ matrix.service.name }}
                   tags: |
+                      # Always produce branch tag & sha tag for traceability
                       type=ref,event=branch
-                      type=ref,event=pr
                       type=sha,prefix={{branch}}-
-                      type=raw,value=latest,enable={{is_default_branch}}
+                      # PR tag only for pull requests
+                      type=ref,event=pr
+                      # latest only for default branch (main) and manual force
+                      type=raw,value=latest,enable=${{ (github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || (github.event_name == 'workflow_dispatch' && github.event.inputs.force_push == 'true') }}
 
-            - name: Build and push Docker image
+            - name: Build image (conditional push)
+              id: build
               uses: docker/build-push-action@v5
               with:
                   context: ${{ matrix.service.context }}
                   file: ${{ matrix.service.dockerfile }}
-                  push: true
+                  push: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || (github.event_name == 'workflow_dispatch' && github.event.inputs.force_push == 'true') }}
                   tags: ${{ steps.meta.outputs.tags }}
                   labels: ${{ steps.meta.outputs.labels }}
                   cache-from: type=gha
                   cache-to: type=gha,mode=max
 
-            - name: Image digest
-              run: echo "Image pushed with tags ${{ steps.meta.outputs.tags }}"
+            - name: Summary
+              run: |
+                  echo "Tags: ${{ steps.meta.outputs.tags }}"
+                  echo "Pushed? ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || (github.event_name == 'workflow_dispatch' && github.event.inputs.force_push == 'true') }}"
+                  echo "Digest (may be empty if not pushed): ${{ steps.build.outputs.digest }}"
