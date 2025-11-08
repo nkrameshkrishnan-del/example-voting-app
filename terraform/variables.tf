@@ -126,6 +126,12 @@ variable "ecr_enable_lifecycle" {
   default     = true
 }
 
+variable "github_actions_user_arn" {
+  description = "IAM user or role ARN for GitHub Actions to access EKS cluster. Example: arn:aws:iam::123456789012:user/github-actions"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Additional tags to apply"
   type        = map(string)

@@ -51,6 +51,25 @@ module "eks" {
   # IRSA (OIDC) disabled per request to avoid OIDC usage; workloads must use node role or static creds
   enable_irsa = false
 
+  # Grant cluster admin access to additional IAM users/roles (e.g., GitHub Actions)
+  # Add your GitHub Actions IAM user ARN here
+  enable_cluster_creator_admin_permissions = true
+  
+  access_entries = var.github_actions_user_arn != "" ? {
+    github_actions = {
+      principal_arn = var.github_actions_user_arn
+      type          = "STANDARD"
+      policy_associations = {
+        admin = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
+  } : {}
+
   eks_managed_node_groups = {
     default = {
       instance_types = ["t3a.medium"]

@@ -1,10 +1,11 @@
 # AWS Secrets Manager secrets for voting app credentials
 
 resource "aws_secretsmanager_secret" "redis_auth" {
-  count       = var.create_redis ? 1 : 0
-  name        = "${local.name_prefix}/redis/auth-token"
-  description = "ElastiCache Redis AUTH token for ${local.name_prefix}"
-  tags        = var.tags
+  count                   = var.create_redis ? 1 : 0
+  name                    = "${local.name_prefix}/redis/auth-token"
+  description             = "ElastiCache Redis AUTH token for ${local.name_prefix}"
+  recovery_window_in_days = 0  # Force delete immediately to allow recreation
+  tags                    = var.tags
 }
 
 resource "aws_secretsmanager_secret_version" "redis_auth" {
@@ -16,10 +17,11 @@ resource "aws_secretsmanager_secret_version" "redis_auth" {
 }
 
 resource "aws_secretsmanager_secret" "rds_credentials" {
-  count       = var.create_rds ? 1 : 0
-  name        = "${local.name_prefix}/rds/credentials"
-  description = "RDS PostgreSQL credentials for ${local.name_prefix}"
-  tags        = var.tags
+  count                   = var.create_rds ? 1 : 0
+  name                    = "${local.name_prefix}/rds/credentials"
+  description             = "RDS PostgreSQL credentials for ${local.name_prefix}"
+  recovery_window_in_days = 0  # Force delete immediately to allow recreation
+  tags                    = var.tags
 }
 
 resource "aws_secretsmanager_secret_version" "rds_credentials" {
