@@ -129,7 +129,7 @@ variable "ecr_enable_lifecycle" {
 variable "github_actions_user_arn" {
   description = "IAM user or role ARN for GitHub Actions to access EKS cluster. Example: arn:aws:iam::123456789012:user/github-actions"
   type        = string
-  default     = ""
+  default     = "arn:aws:iam::703288805584:user/root_admin"
 }
 
 variable "tags" {

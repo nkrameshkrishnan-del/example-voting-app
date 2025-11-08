@@ -61,9 +61,19 @@ jobs:
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
-      - name: Verify cluster connection
+
+      - name: Verify EKS access
         run: |
+          echo "=== IAM Identity ==="
+          aws sts get-caller-identity
+          echo ""
+          echo "=== EKS Cluster Auth Check ==="
+          kubectl auth can-i get pods --all-namespaces
+          echo ""
+          echo "=== Cluster Info ==="
           kubectl cluster-info
+          echo ""
+          echo "=== Nodes ==="
           kubectl get nodes
 
       - name: Replace image placeholders in manifests
