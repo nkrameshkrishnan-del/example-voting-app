@@ -101,6 +101,22 @@ jobs:
           sleep 10
           kubectl get secret redis-secret db-secret -n voting-app
 
+      - name: Install AWS Load Balancer Controller
+        run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+
+          # Install AWS Load Balancer Controller
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${{ env.EKS_CLUSTER_NAME }} \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=$(aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.resourcesVpcConfig.vpcId' --output text) \
+            --wait
+
+          # Wait for controller to be ready
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=aws-load-balancer-controller -n kube-system --timeout=120s
+
       # In-cluster Postgres and Redis removed (using AWS RDS & ElastiCache). Services no longer applied.
 
       - name: Deploy application services
@@ -118,6 +134,17 @@ jobs:
           kubectl rollout status deployment/vote -n voting-app --timeout=5m
           kubectl rollout status deployment/result -n voting-app --timeout=5m
           kubectl rollout status deployment/worker -n voting-app --timeout=5m
+
+      - name: Deploy Ingress
+        run: |
+          # Deploy path-based ingress (single ALB)
+          kubectl apply -f k8s-specifications/ingress.yaml -n voting-app
+
+          echo "Waiting for Ingress to provision ALB..."
+          sleep 30
+
+          # Get ALB DNS name
+          kubectl get ingress -n voting-app
 
       - name: Get service endpoints
         run: |
@@ -140,3 +167,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Deployments:**" >> $GITHUB_STEP_SUMMARY
           kubectl get deployments -n voting-app -o wide >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Ingress (ALB):**" >> $GITHUB_STEP_SUMMARY
+          kubectl get ingress -n voting-app >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Access URLs:**" >> $GITHUB_STEP_SUMMARY
+          ALB_DNS=$(kubectl get ingress voting-app-ingress-paths -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          echo "- Vote: http://${ALB_DNS}/vote" >> $GITHUB_STEP_SUMMARY
+          echo "- Result: http://${ALB_DNS}/result" >> $GITHUB_STEP_SUMMARY
