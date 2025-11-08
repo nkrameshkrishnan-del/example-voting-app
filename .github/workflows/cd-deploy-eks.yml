@@ -84,13 +84,18 @@ jobs:
             --create-namespace \
             --wait
 
+          # Wait for CRDs to be available
+          echo "Waiting for External Secrets CRDs to be available..."
+          kubectl wait --for condition=established --timeout=60s crd/secretstores.external-secrets.io
+          kubectl wait --for condition=established --timeout=60s crd/externalsecrets.external-secrets.io
+
       - name: Apply ConfigMap
         run: |
           kubectl apply -f k8s-specifications/configmap.yaml -n voting-app
 
       - name: Apply External Secrets (sync from AWS Secrets Manager)
         run: |
-          kubectl apply -f k8s-specifications/external-secrets/secretstore.yaml -n voting-app
+          kubectl apply -f k8s-specifications/external-secrets/clustersecretstore.yaml
           kubectl apply -f k8s-specifications/external-secrets/externalsecrets.yaml -n voting-app
           echo "Waiting for secrets to sync from AWS Secrets Manager..."
           sleep 10
