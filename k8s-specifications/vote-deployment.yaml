@@ -32,12 +32,7 @@ spec:
             configMapKeyRef:
               name: app-config
               key: redis_port
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: password
-              optional: true
+        # REDIS_PASSWORD removed - ElastiCache created without AUTH token enabled
         - name: REDIS_SSL
           valueFrom:
             configMapKeyRef:
