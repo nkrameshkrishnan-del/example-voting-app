@@ -9,7 +9,9 @@ import logging
 # Environment-driven Redis configuration (supports ElastiCache or local dev)
 REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD') or None
+# Only use password if it's non-empty (ElastiCache with transit encryption but no AUTH token won't need this)
+REDIS_PASSWORD_RAW = os.getenv('REDIS_PASSWORD', '').strip()
+REDIS_PASSWORD = REDIS_PASSWORD_RAW if REDIS_PASSWORD_RAW else None
 REDIS_SSL = os.getenv('REDIS_SSL', 'false').lower() in ('1', 'true', 'yes')
 
 option_a = os.getenv('OPTION_A', "Cats")

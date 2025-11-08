@@ -18,8 +18,17 @@ io.on('connection', function (socket) {
   });
 });
 
+// Build connection string from environment variables (for AWS RDS or local dev)
+var POSTGRES_USER = process.env.POSTGRES_USER || 'postgres';
+var POSTGRES_PASSWORD = process.env.POSTGRES_PASSWORD || 'postgres';
+var POSTGRES_HOST = process.env.POSTGRES_HOST || 'db';
+var POSTGRES_DB = process.env.POSTGRES_DB || 'postgres';
+
+var connectionString = `postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}`;
+console.log(`Connecting to Postgres at ${POSTGRES_HOST}`);
+
 var pool = new Pool({
-  connectionString: 'postgres://postgres:postgres@db/postgres'
+  connectionString: connectionString
 });
 
 async.retry(
