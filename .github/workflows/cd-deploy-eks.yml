@@ -61,11 +61,10 @@ jobs:
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
-
-          - name: Verify cluster connection
-            run: |
-              kubectl cluster-info
-              kubectl get nodes
+      - name: Verify cluster connection
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
 
       - name: Replace image placeholders in manifests
         run: |
