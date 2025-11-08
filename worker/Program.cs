@@ -18,9 +18,10 @@ namespace Worker
             {
                 // Environment variables for managed services
                 var pgHost = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? "db";
+                var pgPort = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? "5432";
                 var pgUser = Environment.GetEnvironmentVariable("POSTGRES_USER") ?? "postgres";
                 var pgPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? "postgres";
-                var pgConnString = $"Host={pgHost};Username={pgUser};Password={pgPassword};Database=postgres;";
+                var pgConnString = $"Host={pgHost};Port={pgPort};Username={pgUser};Password={pgPassword};Database=postgres;";
 
                 var redisHost = Environment.GetEnvironmentVariable("REDIS_HOST") ?? "redis";
                 var redisPort = Environment.GetEnvironmentVariable("REDIS_PORT") ?? "6379";

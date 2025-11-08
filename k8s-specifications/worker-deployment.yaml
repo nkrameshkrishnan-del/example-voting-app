@@ -44,6 +44,11 @@ spec:
             configMapKeyRef:
               name: app-config
               key: postgres_host
+        - name: POSTGRES_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: postgres_port
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:

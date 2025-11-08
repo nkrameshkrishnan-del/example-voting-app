@@ -8,6 +8,10 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/load-balancer-name: voting-app-alb
     alb.ingress.kubernetes.io/healthcheck-path: /
+    # Enable sticky sessions for Socket.IO (result service needs session affinity)
+    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=86400
+    # Support WebSocket connections for Socket.IO
+    alb.ingress.kubernetes.io/backend-protocol-version: HTTP1
 spec:
   ingressClassName: alb
   rules:
