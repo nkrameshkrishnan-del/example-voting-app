@@ -86,7 +86,7 @@ jobs:
 
           # Wait for CRDs to be available
           echo "Waiting for External Secrets CRDs to be available..."
-          kubectl wait --for condition=established --timeout=60s crd/secretstores.external-secrets.io
+          kubectl wait --for condition=established --timeout=60s crd/clustersecretstores.external-secrets.io
           kubectl wait --for condition=established --timeout=60s crd/externalsecrets.external-secrets.io
 
       - name: Apply ConfigMap
