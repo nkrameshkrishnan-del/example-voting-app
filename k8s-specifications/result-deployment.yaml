@@ -17,6 +17,7 @@ spec:
       containers:
       - image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/voting-app/result:latest
         name: result
+        imagePullPolicy: Always
         ports:
         - containerPort: 80
           name: result

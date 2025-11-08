@@ -64,6 +64,12 @@ def hello():
     resp.set_cookie('voter_id', voter_id)
     return resp
 
+# Provide /vote path so Ingress path /vote works without rewrite.
+# Reuse existing logic from root handler.
+@app.route("/vote", methods=['POST','GET'])
+def vote_path():
+    return hello()
+
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=80, debug=True, threaded=True)
