@@ -29,6 +29,7 @@ on:
 env:
     AWS_REGION: us-east-1
     ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+    ECR_REPOSITORY_PREFIX: voting-app
 
 jobs:
     build-and-push:
@@ -72,7 +73,7 @@ jobs:
               id: meta
               uses: docker/metadata-action@v5
               with:
-                  images: ${{ env.ECR_REGISTRY }}/${{ matrix.service.name }}
+                  images: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_PREFIX }}/${{ matrix.service.name }}
                   tags: |
                       # Always produce branch tag & sha tag for traceability
                       type=ref,event=branch

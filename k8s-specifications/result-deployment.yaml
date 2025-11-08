@@ -15,7 +15,7 @@ spec:
         app: result
     spec:
       containers:
-      - image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/result:latest
+      - image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/voting-app/result:latest
         name: result
         ports:
         - containerPort: 80

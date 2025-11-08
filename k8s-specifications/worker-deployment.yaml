@@ -15,7 +15,7 @@ spec:
         app: worker
     spec:
       containers:
-      - image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/worker:latest
+      - image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/voting-app/worker:latest
         name: worker
         env:
         - name: REDIS_HOST
