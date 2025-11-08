@@ -30,7 +30,7 @@ spec:
               service:
                 name: vote
                 port:
-                  number: 5000
+                  number: 8080
     - host: result.voting-app.example.com  # Change to your domain
       http:
         paths:
@@ -40,7 +40,7 @@ spec:
               service:
                 name: result
                 port:
-                  number: 5001
+                  number: 8081
 ---
 # Alternative: Single domain with path-based routing
 apiVersion: networking.k8s.io/v1
@@ -64,11 +64,11 @@ spec:
               service:
                 name: vote
                 port:
-                  number: 5000
+                  number: 8080
           - path: /result
             pathType: Prefix
             backend:
               service:
                 name: result
                 port:
-                  number: 5001
+                  number: 8081

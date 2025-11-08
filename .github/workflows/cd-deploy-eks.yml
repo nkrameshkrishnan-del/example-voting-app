@@ -137,13 +137,18 @@ jobs:
 
       - name: Deploy Ingress
         run: |
-          # Deploy path-based ingress (single ALB)
-          kubectl apply -f k8s-specifications/ingress.yaml -n voting-app
+          # Deploy simplified path-based ingress (single ALB)
+          kubectl apply -f k8s-specifications/ingress-simple.yaml
 
-          echo "Waiting for Ingress to provision ALB..."
-          sleep 30
+          echo "Waiting for Ingress to provision ALB and TargetGroupBindings..."
+          sleep 45
+
+          # Verify TargetGroupBindings were created
+          echo "=== TargetGroupBindings ==="
+          kubectl get targetgroupbindings -n voting-app || echo "TargetGroupBindings not yet created"
 
           # Get ALB DNS name
+          echo "=== Ingress Status ==="
           kubectl get ingress -n voting-app
 
       - name: Get service endpoints
@@ -172,6 +177,6 @@ jobs:
           kubectl get ingress -n voting-app >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Access URLs:**" >> $GITHUB_STEP_SUMMARY
-          ALB_DNS=$(kubectl get ingress voting-app-ingress-paths -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          ALB_DNS=$(kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
           echo "- Vote: http://${ALB_DNS}/vote" >> $GITHUB_STEP_SUMMARY
           echo "- Result: http://${ALB_DNS}/result" >> $GITHUB_STEP_SUMMARY
