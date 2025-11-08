@@ -48,11 +48,16 @@ def hello():
     vote = None
 
     if request.method == 'POST':
-        redis = get_redis()
-        vote = request.form['vote']
-        app.logger.info('Received vote for %s', vote)
-        data = json.dumps({'voter_id': voter_id, 'vote': vote})
-        redis.rpush('votes', data)
+        try:
+            redis = get_redis()
+            vote = request.form['vote']
+            app.logger.info('Received vote for %s', vote)
+            data = json.dumps({'voter_id': voter_id, 'vote': vote})
+            redis.rpush('votes', data)
+        except Exception as e:
+            # Log and continue rendering page instead of 500
+            app.logger.error('Failed to record vote: %s', e, exc_info=True)
+            vote = None
 
     resp = make_response(render_template(
         'index.html',

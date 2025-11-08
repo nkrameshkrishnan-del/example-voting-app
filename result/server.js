@@ -66,14 +66,29 @@ function collectVotesFromResult(result) {
 
 app.use(cookieParser());
 app.use(express.urlencoded());
-app.use(express.static(__dirname + '/views'));
+
+// Serve static assets for result UI under /result path for cleaner ingress.
+// This allows all assets to be fetched via /result/... without enumerating individual paths.
+// Serve all static assets for the result UI. Use explicit sub-mounts to avoid any ambiguity
+// and allow us to confirm each category independently if needed.
+app.use('/result/stylesheets', express.static(path.join(__dirname, 'views', 'stylesheets')));
+app.use('/result', express.static(path.join(__dirname, 'views'), { index: false }));
+
+// Redirect /result (no trailing slash) to /result/ so that relative paths with <base href="/result/"> resolve consistently.
+app.get('/result', function (req, res, next) {
+  if (req.path === '/result' && !/\/$/.test(req.originalUrl)) {
+    return res.redirect(301, '/result/');
+  }
+  next();
+});
 
 app.get('/', function (req, res) {
   res.sendFile(path.resolve(__dirname + '/views/index.html'));
 });
 
 // Serve same scoreboard on /result so ALB path /result works.
-app.get('/result', function (req, res) {
+// Serve the scoreboard index at /result/ (trailing slash) and /result/index.html
+app.get(['/result/', '/result/index.html'], function (req, res) {
   res.sendFile(path.resolve(__dirname + '/views/index.html'));
 });
 

@@ -13,6 +13,13 @@ spec:
   rules:
     - http:
         paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vote
+                port:
+                  number: 8080
           - path: /vote
             pathType: Prefix
             backend:
@@ -27,3 +34,10 @@ spec:
                 name: result
                 port:
                   number: 8081
+          - path: /static
+            pathType: Prefix
+            backend:
+              service:
+                name: vote
+                port:
+                  number: 8080
