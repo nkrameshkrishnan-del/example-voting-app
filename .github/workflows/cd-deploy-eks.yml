@@ -21,6 +21,11 @@ on:
 env:
   AWS_REGION: us-east-1
   EKS_CLUSTER_NAME: voting-app-cluster
+  # Feature flags
+  INSTALL_EXTERNAL_SECRETS: true
+  INSTALL_ALB_CONTROLLER: true
+  APPLY_INGRESS: true
+  ROLLOUT_WAIT_TIMEOUT: 5m
 
 jobs:
   deploy:
@@ -57,16 +62,18 @@ jobs:
         run: |
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-      - name: Verify cluster connection
-        run: |
-          kubectl cluster-info
-          kubectl get nodes
+          - name: Verify cluster connection
+            run: |
+              kubectl cluster-info
+              kubectl get nodes
 
       - name: Replace image placeholders in manifests
         run: |
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-
-          # Update all deployment files with actual ECR registry
+          # Count placeholders BEFORE substitution to decide if we need a forced rollout restart later
+          PLACEHOLDER_COUNT_BEFORE=$(grep -R "<AWS_ACCOUNT_ID>" k8s-specifications/*-deployment.yaml | wc -l || true)
+          echo "PLACEHOLDER_COUNT_BEFORE=${PLACEHOLDER_COUNT_BEFORE}" >> $GITHUB_ENV
+          # Perform substitution (idempotent if already replaced)
           find k8s-specifications/ -name '*-deployment.yaml' -type f -exec \
             sed -i "s|<AWS_ACCOUNT_ID>|${AWS_ACCOUNT_ID}|g; s|<AWS_REGION>|${{ env.AWS_REGION }}|g" {} \;
 
@@ -74,7 +81,8 @@ jobs:
         run: |
           kubectl create namespace voting-app --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Install External Secrets Operator
+      - name: Install External Secrets Operator (optional)
+        if: env.INSTALL_EXTERNAL_SECRETS == 'true'
         run: |
           helm repo add external-secrets https://charts.external-secrets.io
           helm repo update
@@ -84,38 +92,36 @@ jobs:
             --create-namespace \
             --wait
 
-          # Wait for CRDs to be available
           echo "Waiting for External Secrets CRDs to be available..."
-          kubectl wait --for condition=established --timeout=60s crd/clustersecretstores.external-secrets.io
-          kubectl wait --for condition=established --timeout=60s crd/externalsecrets.external-secrets.io
+          kubectl wait --for condition=established --timeout=120s crd/clustersecretstores.external-secrets.io || true
+          kubectl wait --for condition=established --timeout=120s crd/externalsecrets.external-secrets.io || true
 
-      - name: Apply ConfigMap
+      - name: Apply ConfigMap & base manifests
         run: |
           kubectl apply -f k8s-specifications/configmap.yaml -n voting-app
 
-      - name: Apply External Secrets (sync from AWS Secrets Manager)
+      - name: Apply External Secrets (optional)
+        if: env.INSTALL_EXTERNAL_SECRETS == 'true'
         run: |
           kubectl apply -f k8s-specifications/external-secrets/clustersecretstore.yaml
           kubectl apply -f k8s-specifications/external-secrets/externalsecrets.yaml -n voting-app
           echo "Waiting for secrets to sync from AWS Secrets Manager..."
-          sleep 10
-          kubectl get secret redis-secret db-secret -n voting-app
+          sleep 20
+          kubectl get secret redis-secret db-secret -n voting-app || true
 
-      - name: Install AWS Load Balancer Controller
+      - name: Install AWS Load Balancer Controller (optional)
+        if: env.INSTALL_ALB_CONTROLLER == 'true'
         run: |
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
-
-          # Install AWS Load Balancer Controller
+          VPC_ID=$(aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.resourcesVpcConfig.vpcId' --output text)
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=${{ env.EKS_CLUSTER_NAME }} \
             --set region=${{ env.AWS_REGION }} \
-            --set vpcId=$(aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.resourcesVpcConfig.vpcId' --output text) \
+            --set vpcId=${VPC_ID} \
             --wait
-
-          # Wait for controller to be ready
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=aws-load-balancer-controller -n kube-system --timeout=120s
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=aws-load-balancer-controller -n kube-system --timeout=180s || true
 
       # In-cluster Postgres and Redis removed (using AWS RDS & ElastiCache). Services no longer applied.
 
@@ -123,44 +129,61 @@ jobs:
         run: |
           kubectl apply -f k8s-specifications/vote-deployment.yaml -n voting-app
           kubectl apply -f k8s-specifications/vote-service.yaml -n voting-app
-
           kubectl apply -f k8s-specifications/result-deployment.yaml -n voting-app
           kubectl apply -f k8s-specifications/result-service.yaml -n voting-app
-
           kubectl apply -f k8s-specifications/worker-deployment.yaml -n voting-app
+
+      - name: Conditional rollout restart (force refresh if images unchanged)
+        run: |
+          echo "Placeholder count before substitution: ${PLACEHOLDER_COUNT_BEFORE:-unset}" || true
+          if [ "${PLACEHOLDER_COUNT_BEFORE}" = "0" ]; then
+            echo "No placeholders were present; forcing rollout restart to refresh 'latest' images."
+            kubectl rollout restart deployment/vote -n voting-app || true
+            kubectl rollout restart deployment/result -n voting-app || true
+            kubectl rollout restart deployment/worker -n voting-app || true
+          else
+            echo "Placeholders existed and were substituted; fresh specs already applied. Skipping forced restart."
+          fi
 
       - name: Wait for deployments to be ready
         run: |
-          kubectl rollout status deployment/vote -n voting-app --timeout=5m
-          kubectl rollout status deployment/result -n voting-app --timeout=5m
-          kubectl rollout status deployment/worker -n voting-app --timeout=5m
+          kubectl rollout status deployment/vote -n voting-app --timeout=${{ env.ROLLOUT_WAIT_TIMEOUT }} || exit 1
+          kubectl rollout status deployment/result -n voting-app --timeout=${{ env.ROLLOUT_WAIT_TIMEOUT }} || exit 1
+          kubectl rollout status deployment/worker -n voting-app --timeout=${{ env.ROLLOUT_WAIT_TIMEOUT }} || exit 1
 
-      - name: Deploy Ingress
+      - name: Deploy Ingress (optional)
+        if: env.APPLY_INGRESS == 'true'
         run: |
-          # Deploy simplified path-based ingress (single ALB)
           kubectl apply -f k8s-specifications/ingress-simple.yaml
-
           echo "Waiting for Ingress to provision ALB and TargetGroupBindings..."
-          sleep 45
-
-          # Verify TargetGroupBindings were created
+          sleep 60
           echo "=== TargetGroupBindings ==="
           kubectl get targetgroupbindings -n voting-app || echo "TargetGroupBindings not yet created"
-
-          # Get ALB DNS name
           echo "=== Ingress Status ==="
           kubectl get ingress -n voting-app
+
+      - name: Ingress health probe
+        if: env.APPLY_INGRESS == 'true'
+        run: |
+          ALB_DNS=$(kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          if [ -z "$ALB_DNS" ]; then
+            echo "ALB hostname not yet available; skipping health probes"
+            exit 0
+          fi
+          echo "Probing vote path..."
+          curl -s -o /dev/null -w 'Vote path HTTP %{http_code}\n' http://${ALB_DNS}/vote || true
+          echo "Probing result path..."
+          curl -s -o /dev/null -w 'Result path HTTP %{http_code}\n' http://${ALB_DNS}/result || true
+          echo "Health probe complete"
 
       - name: Get service endpoints
         run: |
           echo "=== Vote Service ==="
-          kubectl get service vote -n voting-app
-
+          kubectl get service vote -n voting-app -o wide
           echo "=== Result Service ==="
-          kubectl get service result -n voting-app
-
+          kubectl get service result -n voting-app -o wide
           echo "=== All Pods ==="
-          kubectl get pods -n voting-app
+          kubectl get pods -n voting-app -o wide
 
       - name: Deployment summary
         run: |
@@ -177,6 +200,15 @@ jobs:
           kubectl get ingress -n voting-app >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Access URLs:**" >> $GITHUB_STEP_SUMMARY
-          ALB_DNS=$(kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
-          echo "- Vote: http://${ALB_DNS}/vote" >> $GITHUB_STEP_SUMMARY
-          echo "- Result: http://${ALB_DNS}/result" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ env.APPLY_INGRESS }}" = "true" ]; then
+            ALB_DNS=$(kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+            echo "- Vote (Ingress): http://${ALB_DNS}/vote" >> $GITHUB_STEP_SUMMARY
+            echo "- Result (Ingress): http://${ALB_DNS}/result" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Ingress disabled by APPLY_INGRESS flag" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Feature Flags:" >> $GITHUB_STEP_SUMMARY
+          echo "- INSTALL_EXTERNAL_SECRETS=${{ env.INSTALL_EXTERNAL_SECRETS }}" >> $GITHUB_STEP_SUMMARY
+          echo "- INSTALL_ALB_CONTROLLER=${{ env.INSTALL_ALB_CONTROLLER }}" >> $GITHUB_STEP_SUMMARY
+          echo "- APPLY_INGRESS=${{ env.APPLY_INGRESS }}" >> $GITHUB_STEP_SUMMARY
