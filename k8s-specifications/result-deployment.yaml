@@ -37,6 +37,11 @@ spec:
             secretKeyRef:
               name: db-secret
               key: password
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: dbname
         resources:
           requests:
             memory: "64Mi"
