@@ -1,152 +1,137 @@
 name: CD - Deploy to EKS
 
 on:
-    workflow_run:
-        workflows: ["CI - Build and Push to ECR"]
-        types:
-            - completed
-        branches:
-            - main
-    workflow_dispatch:
-        inputs:
-            environment:
-                description: "Environment to deploy to"
-                required: true
-                default: "production"
-                type: choice
-                options:
-                    - production
-                    - staging
+  workflow_run:
+    workflows: ["CI - Build and Push to ECR"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy to"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - staging
 
 env:
-    AWS_REGION: us-east-1
-    EKS_CLUSTER_NAME: voting-app-cluster
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: voting-app-cluster
 
 jobs:
-    deploy:
-        name: Deploy to EKS
-        runs-on: ubuntu-latest
-        if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
 
-        permissions:
-            contents: read
+    permissions:
+      contents: read
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-            - name: Configure AWS credentials
-              uses: aws-actions/configure-aws-credentials@v4
-              with:
-                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-                  aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      # NOTE: EKS cluster lifecycle is now managed by Terraform. This workflow assumes the cluster already exists.
 
-            - name: Install eksctl
-              run: |
-                  curl -sSfL https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz -o eksctl.tar.gz
-                  tar -xzf eksctl.tar.gz -C /usr/local/bin
-                  eksctl version
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "v1.28.0"
 
-            - name: Ensure EKS cluster exists (idempotent)
-              run: |
-                  set -e
-                  echo "Checking for existing cluster: ${{ env.EKS_CLUSTER_NAME }}"
-                  if eksctl get cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
-                    echo "Cluster already exists. Skipping creation."
-                  else
-                    echo "Cluster not found. Creating using config (if present) or quick defaults..."
-                    if [ -f eks-cluster-config.yaml ]; then
-                      # Prefer explicit config file committed to repo
-                      eksctl create cluster -f eks-cluster-config.yaml
-                    else
-                      # Fallback minimal cluster (2 nodes t3.medium) using default VPC
-                      eksctl create cluster \
-                        --name ${{ env.EKS_CLUSTER_NAME }} \
-                        --region ${{ env.AWS_REGION }} \
-                        --nodes 2 \
-                        --node-type t3.medium
-                    fi
-                  fi
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: "v3.13.0"
 
-            - name: Install kubectl
-              uses: azure/setup-kubectl@v3
-              with:
-                  version: "v1.28.0"
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-            - name: Update kubeconfig
-              run: |
-                  aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+      - name: Verify cluster connection
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
 
-            - name: Verify cluster connection
-              run: |
-                  kubectl cluster-info
-                  kubectl get nodes
+      - name: Replace image placeholders in manifests
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-            - name: Replace image placeholders in manifests
-              run: |
-                  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          # Update all deployment files with actual ECR registry
+          find k8s-specifications/ -name '*-deployment.yaml' -type f -exec \
+            sed -i "s|<AWS_ACCOUNT_ID>|${AWS_ACCOUNT_ID}|g; s|<AWS_REGION>|${{ env.AWS_REGION }}|g" {} \;
 
-                  # Update all deployment files with actual ECR registry
-                  find k8s-specifications/ -name '*-deployment.yaml' -type f -exec \
-                    sed -i "s|<AWS_ACCOUNT_ID>|${AWS_ACCOUNT_ID}|g; s|<AWS_REGION>|${{ env.AWS_REGION }}|g" {} \;
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace voting-app --dry-run=client -o yaml | kubectl apply -f -
 
-            - name: Create namespace if not exists
-              run: |
-                  kubectl create namespace voting-app --dry-run=client -o yaml | kubectl apply -f -
+      - name: Install External Secrets Operator
+        run: |
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+          helm upgrade --install external-secrets \
+            external-secrets/external-secrets \
+            -n external-secrets-system \
+            --create-namespace \
+            --wait
 
-            - name: Apply ConfigMap and Secrets
-              run: |
-                  kubectl apply -f k8s-specifications/configmap.yaml -n voting-app
-                  # Note: Secrets should be managed via AWS Secrets Manager or external secrets operator
-                  # kubectl apply -f k8s-specifications/secrets.yaml -n voting-app
+      - name: Apply ConfigMap
+        run: |
+          kubectl apply -f k8s-specifications/configmap.yaml -n voting-app
 
-            - name: Deploy database service
-              run: |
-                  # Only deploy if using in-cluster DB (not recommended for production)
-                  # kubectl apply -f k8s-specifications/db-deployment.yaml -n voting-app
-                  kubectl apply -f k8s-specifications/db-service.yaml -n voting-app
+      - name: Apply External Secrets (sync from AWS Secrets Manager)
+        run: |
+          kubectl apply -f k8s-specifications/external-secrets/secretstore.yaml -n voting-app
+          kubectl apply -f k8s-specifications/external-secrets/externalsecrets.yaml -n voting-app
+          echo "Waiting for secrets to sync from AWS Secrets Manager..."
+          sleep 10
+          kubectl get secret redis-secret db-secret -n voting-app
 
-            - name: Deploy Redis service (if not using ElastiCache)
-              run: |
-                  # Only deploy if not using AWS ElastiCache
-                  # kubectl apply -f k8s-specifications/redis-deployment.yaml -n voting-app
-                  kubectl apply -f k8s-specifications/redis-service.yaml -n voting-app
+      # In-cluster Postgres and Redis removed (using AWS RDS & ElastiCache). Services no longer applied.
 
-            - name: Deploy application services
-              run: |
-                  kubectl apply -f k8s-specifications/vote-deployment.yaml -n voting-app
-                  kubectl apply -f k8s-specifications/vote-service.yaml -n voting-app
+      - name: Deploy application services
+        run: |
+          kubectl apply -f k8s-specifications/vote-deployment.yaml -n voting-app
+          kubectl apply -f k8s-specifications/vote-service.yaml -n voting-app
 
-                  kubectl apply -f k8s-specifications/result-deployment.yaml -n voting-app
-                  kubectl apply -f k8s-specifications/result-service.yaml -n voting-app
+          kubectl apply -f k8s-specifications/result-deployment.yaml -n voting-app
+          kubectl apply -f k8s-specifications/result-service.yaml -n voting-app
 
-                  kubectl apply -f k8s-specifications/worker-deployment.yaml -n voting-app
+          kubectl apply -f k8s-specifications/worker-deployment.yaml -n voting-app
 
-            - name: Wait for deployments to be ready
-              run: |
-                  kubectl rollout status deployment/vote -n voting-app --timeout=5m
-                  kubectl rollout status deployment/result -n voting-app --timeout=5m
-                  kubectl rollout status deployment/worker -n voting-app --timeout=5m
+      - name: Wait for deployments to be ready
+        run: |
+          kubectl rollout status deployment/vote -n voting-app --timeout=5m
+          kubectl rollout status deployment/result -n voting-app --timeout=5m
+          kubectl rollout status deployment/worker -n voting-app --timeout=5m
 
-            - name: Get service endpoints
-              run: |
-                  echo "=== Vote Service ==="
-                  kubectl get service vote -n voting-app
+      - name: Get service endpoints
+        run: |
+          echo "=== Vote Service ==="
+          kubectl get service vote -n voting-app
 
-                  echo "=== Result Service ==="
-                  kubectl get service result -n voting-app
+          echo "=== Result Service ==="
+          kubectl get service result -n voting-app
 
-                  echo "=== All Pods ==="
-                  kubectl get pods -n voting-app
+          echo "=== All Pods ==="
+          kubectl get pods -n voting-app
 
-            - name: Deployment summary
-              run: |
-                  echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "**Cluster:** ${{ env.EKS_CLUSTER_NAME }}" >> $GITHUB_STEP_SUMMARY
-                  echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
-                  echo "**Namespace:** voting-app" >> $GITHUB_STEP_SUMMARY
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "**Deployments:**" >> $GITHUB_STEP_SUMMARY
-                  kubectl get deployments -n voting-app -o wide >> $GITHUB_STEP_SUMMARY
+      - name: Deployment summary
+        run: |
+          echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster:** ${{ env.EKS_CLUSTER_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** voting-app" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployments:**" >> $GITHUB_STEP_SUMMARY
+          kubectl get deployments -n voting-app -o wide >> $GITHUB_STEP_SUMMARY

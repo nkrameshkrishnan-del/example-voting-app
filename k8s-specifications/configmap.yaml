@@ -3,10 +3,10 @@ kind: ConfigMap
 metadata:
   name: app-config
 data:
-  # AWS ElastiCache Redis endpoint (replace with your ElastiCache endpoint)
-  redis_host: "your-elasticache-cluster.xxxxx.cache.amazonaws.com"
+  # AWS ElastiCache Redis endpoint (set actual endpoint, omit port if using TLS config separately)
+  redis_host: "master.votingappdev-redis.r0rtqe.use1.cache.amazonaws.com"
   redis_port: "6379"
-  redis_ssl: "true"
-  
-  # AWS RDS PostgreSQL endpoint (replace with your RDS endpoint)
-  postgres_host: "your-rds-instance.xxxxx.rds.amazonaws.com"
+  redis_ssl: "true"  # set to false if ElastiCache not using in-transit encryption
+
+  # AWS RDS PostgreSQL endpoint (set actual endpoint hostname)
+  postgres_host: "voting-app-dev-pg.curq228s8eze.us-east-1.rds.amazonaws.com:5432"

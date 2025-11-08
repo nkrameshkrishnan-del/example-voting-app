@@ -4,3 +4,11 @@ bin/
 obj/
 .vs/
 node_modules/
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.*
+terraform/.terraform.lock.hcl
+terraform/.terraform.tfstate.lock.info

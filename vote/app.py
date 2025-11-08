@@ -6,6 +6,12 @@ import random
 import json
 import logging
 
+# Environment-driven Redis configuration (supports ElastiCache or local dev)
+REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
+REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD') or None
+REDIS_SSL = os.getenv('REDIS_SSL', 'false').lower() in ('1', 'true', 'yes')
+
 option_a = os.getenv('OPTION_A', "Cats")
 option_b = os.getenv('OPTION_B', "Dogs")
 hostname = socket.gethostname()
@@ -18,7 +24,19 @@ app.logger.setLevel(logging.INFO)
 
 def get_redis():
     if not hasattr(g, 'redis'):
-        g.redis = Redis(host="redis", db=0, socket_timeout=5)
+        redis_kwargs = {
+            'host': REDIS_HOST,
+            'port': REDIS_PORT,
+            'db': 0,
+            'socket_timeout': 5,
+        }
+        if REDIS_PASSWORD:
+            redis_kwargs['password'] = REDIS_PASSWORD
+        if REDIS_SSL:
+            # For ElastiCache in-transit encryption
+            redis_kwargs['ssl'] = True
+        g.redis = Redis(**redis_kwargs)
+        app.logger.info("Initialized Redis client host=%s port=%s ssl=%s", REDIS_HOST, REDIS_PORT, REDIS_SSL)
     return g.redis
 
 @app.route("/", methods=['POST','GET'])

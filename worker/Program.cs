@@ -16,8 +16,19 @@ namespace Worker
         {
             try
             {
-                var pgsql = OpenDbConnection("Server=db;Username=postgres;Password=postgres;");
-                var redisConn = OpenRedisConnection("redis");
+                // Environment variables for managed services
+                var pgHost = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? "db";
+                var pgUser = Environment.GetEnvironmentVariable("POSTGRES_USER") ?? "postgres";
+                var pgPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? "postgres";
+                var pgConnString = $"Host={pgHost};Username={pgUser};Password={pgPassword};Database=postgres;";
+
+                var redisHost = Environment.GetEnvironmentVariable("REDIS_HOST") ?? "redis";
+                var redisPort = Environment.GetEnvironmentVariable("REDIS_PORT") ?? "6379";
+                var redisPassword = Environment.GetEnvironmentVariable("REDIS_PASSWORD");
+                var redisSsl = (Environment.GetEnvironmentVariable("REDIS_SSL") ?? "false").ToLower() is "1" or "true" or "yes";
+
+                var pgsql = OpenDbConnection(pgConnString);
+                var redisConn = OpenRedisConnection(redisHost, redisPort, redisPassword, redisSsl);
                 var redis = redisConn.GetDatabase();
 
                 // Keep alive is not implemented in Npgsql yet. This workaround was recommended:
@@ -34,7 +45,7 @@ namespace Worker
                     // Reconnect redis if down
                     if (redisConn == null || !redisConn.IsConnected) {
                         Console.WriteLine("Reconnecting Redis");
-                        redisConn = OpenRedisConnection("redis");
+                        redisConn = OpenRedisConnection(redisHost, redisPort, redisPassword, redisSsl);
                         redis = redisConn.GetDatabase();
                     }
                     string json = redis.ListLeftPopAsync("votes").Result;
@@ -46,7 +57,7 @@ namespace Worker
                         if (!pgsql.State.Equals(System.Data.ConnectionState.Open))
                         {
                             Console.WriteLine("Reconnecting DB");
-                            pgsql = OpenDbConnection("Server=db;Username=postgres;Password=postgres;");
+                            pgsql = OpenDbConnection(pgConnString);
                         }
                         else
                         { // Normal +1 vote requested
@@ -102,33 +113,38 @@ namespace Worker
             return connection;
         }
 
-        private static ConnectionMultiplexer OpenRedisConnection(string hostname)
+        private static ConnectionMultiplexer OpenRedisConnection(string host, string port, string? password, bool ssl)
         {
-            // Use IP address to workaround https://github.com/StackExchange/StackExchange.Redis/issues/410
-            var ipAddress = GetIp(hostname);
-            Console.WriteLine($"Found redis at {ipAddress}");
+            var configOptions = new ConfigurationOptions
+            {
+                EndPoints = { $"{host}:{port}" },
+                AbortOnConnectFail = false,
+                ConnectRetry = 5,
+                ConnectTimeout = 5000,
+                SyncTimeout = 5000,
+                Ssl = ssl
+            };
+            if (!string.IsNullOrWhiteSpace(password))
+            {
+                configOptions.Password = password;
+            }
 
+            Console.Error.WriteLine($"Connecting to redis host={host} port={port} ssl={ssl}");
             while (true)
             {
                 try
                 {
-                    Console.Error.WriteLine("Connecting to redis");
-                    return ConnectionMultiplexer.Connect(ipAddress);
+                    return ConnectionMultiplexer.Connect(configOptions);
                 }
-                catch (RedisConnectionException)
+                catch (RedisConnectionException ex)
                 {
-                    Console.Error.WriteLine("Waiting for redis");
+                    Console.Error.WriteLine($"Waiting for redis: {ex.Message}");
                     Thread.Sleep(1000);
                 }
             }
         }
 
-        private static string GetIp(string hostname)
-            => Dns.GetHostEntryAsync(hostname)
-                .Result
-                .AddressList
-                .First(a => a.AddressFamily == AddressFamily.InterNetwork)
-                .ToString();
+        // Legacy DNS to IP resolution removed; ElastiCache endpoints resolve directly.
 
         private static void UpdateVote(NpgsqlConnection connection, string voterId, string vote)
         {
