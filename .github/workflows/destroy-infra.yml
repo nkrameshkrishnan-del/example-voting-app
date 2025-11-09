@@ -4,9 +4,9 @@ on:
     workflow_dispatch:
         inputs:
             scope:
-                description: "What to destroy: all | k8s | cluster | ecr | terraform (comma-separated)"
+                description: "What to destroy: all | k8s | cluster | ecr | terraform (comma-separated). 'terraform' alone skips script phase and only runs terraform destroy."
                 required: true
-                default: "all"
+                default: "terraform"
             rds_id:
                 description: "Optional RDS instance identifier to delete"
                 required: false
@@ -76,34 +76,51 @@ jobs:
                   FLAGS=""
                   SCOPE="${{ steps.scope.outputs.scope_clean }}"
                   TF_FLAG="false"
-                  if [[ "$SCOPE" == "all" ]]; then FLAGS="--all"; else
+                  RUN_SCRIPT="false"
+                  if [[ "$SCOPE" == "all" ]]; then 
+                    FLAGS="--all"
+                    RUN_SCRIPT="true"
+                  else
                     IFS=',' read -ra PARTS <<< "$SCOPE"
                     for part in "${PARTS[@]}"; do
                       case "$part" in
-                        k8s) FLAGS+=" --k8s" ;;
-                        cluster) FLAGS+=" --cluster" ;;
-                        ecr) FLAGS+=" --ecr" ;;
+                        k8s) FLAGS+=" --k8s"; RUN_SCRIPT="true" ;;
+                        cluster) FLAGS+=" --cluster"; RUN_SCRIPT="true" ;;
+                        ecr) FLAGS+=" --ecr"; RUN_SCRIPT="true" ;;
                         terraform) TF_FLAG="true" ;;
                         *) echo "Ignoring unknown scope entry: $part" ;;
                       esac
                     done
                   fi
-                  if [[ "${{ github.event.inputs.rds_id }}" != "" ]]; then FLAGS+=" --rds ${{ github.event.inputs.rds_id }}"; fi
-                  if [[ "${{ github.event.inputs.elasticache_id }}" != "" ]]; then FLAGS+=" --elasticache ${{ github.event.inputs.elasticache_id }}"; fi
+                  if [[ "${{ github.event.inputs.rds_id }}" != "" ]]; then FLAGS+=" --rds ${{ github.event.inputs.rds_id }}"; RUN_SCRIPT="true"; fi
+                  if [[ "${{ github.event.inputs.elasticache_id }}" != "" ]]; then FLAGS+=" --elasticache ${{ github.event.inputs.elasticache_id }}"; RUN_SCRIPT="true"; fi
                   if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then FLAGS+=" --dry-run"; fi
                   if [[ "${{ github.event.inputs.force }}" == "true" ]]; then FLAGS+=" --force"; fi
                   if [[ "${{ github.event.inputs.region_override }}" != "" ]]; then FLAGS+=" --region ${{ github.event.inputs.region_override }}"; fi
                   echo "flags=$FLAGS" >> $GITHUB_OUTPUT
                   echo "terraform=$TF_FLAG" >> $GITHUB_OUTPUT
-                  echo "Final flags: $FLAGS (terraform destroy requested: $TF_FLAG)"
+                  echo "run_script=$RUN_SCRIPT" >> $GITHUB_OUTPUT
+                  echo "Final flags: $FLAGS (terraform destroy requested: $TF_FLAG, run script: $RUN_SCRIPT)"
 
             - name: Destroy infrastructure (script)
+              if: steps.flags.outputs.run_script == 'true'
               env:
                   AWS_REGION: ${{ github.event.inputs.region_override || env.AWS_REGION }}
                   EKS_CLUSTER_NAME: ${{ env.EKS_CLUSTER_NAME }}
               run: |
                   echo "Running destruction with flags: ${{ steps.flags.outputs.flags }}"
-                  ./scripts/destroy-infra.sh ${{ steps.flags.outputs.flags }}
+                  ./scripts/destroy-infra.sh ${{ steps.flags.outputs.flags }} || exit 1
+
+            - name: Skip script (terraform-only)
+              if: steps.flags.outputs.run_script != 'true' && steps.flags.outputs.terraform == 'true'
+              run: |
+                  echo "Scope requested only terraform destroy; skipping script phase."
+
+            - name: Validate scope (no actions)
+              if: steps.flags.outputs.run_script != 'true' && steps.flags.outputs.terraform != 'true'
+              run: |
+                  echo "Error: No actionable flags provided (e.g. k8s, cluster, ecr, all, rds, elasticache)." >&2
+                  exit 1
 
             - name: Setup Terraform
               if: steps.flags.outputs.terraform == 'true'
@@ -118,17 +135,32 @@ jobs:
                   EKS_CLUSTER_NAME: ${{ env.EKS_CLUSTER_NAME }}
               run: |
                   echo "Terraform destroy requested. Preparing..."
+                  # STEP 0: Attempt kubeconfig (non-fatal if cluster already gone)
                   aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" || echo "(kubeconfig update failed; cluster may already be gone)"
+                  # STEP 1: Delete Kubernetes ingress (releases ALB)
+                  echo "[1/4] Deleting ingress voting-app-ingress (if present)"
                   kubectl delete ingress voting-app-ingress -n voting-app --ignore-not-found || true
-                  echo "Waiting 30s for ALB ENIs to detach..."
+                  # STEP 2: Attempt explicit ALB deletion (best-effort)
+                  echo "[2/4] Attempting explicit ALB deletion by name voting-app-alb (ignore if not found)"
+                  ALB_ARN=$(aws elbv2 describe-load-balancers --names voting-app-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo '')
+                  if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+                    echo "Found ALB ARN: $ALB_ARN - deleting..."
+                    aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN" || echo "(ALB delete failed - may already be deleting)"
+                  else
+                    echo "No ALB named voting-app-alb found (may already be deleting or different name)."
+                  fi
+                  # STEP 3: Wait for network interfaces to be released
+                  echo "[3/4] Waiting 30s for ALB ENIs to detach..."
                   sleep 30
+                  # STEP 4: Run Terraform destroy / plan
+                  echo "[4/4] Executing Terraform phase"
                   cd terraform
                   terraform init -input=false
                   if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
                     echo "Dry run enabled - showing destroy plan only."
-                    terraform plan -destroy -var=environment=dev || true
+                    terraform plan -destroy -var=environment=dev || exit 1
                   else
-                    terraform destroy -auto-approve -var=environment=dev || true
+                    terraform destroy -auto-approve -var=environment=dev || exit 1
                   fi
                   echo "Terraform phase complete."
 
