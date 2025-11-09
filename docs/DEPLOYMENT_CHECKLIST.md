@@ -50,8 +50,16 @@ Badge Legend:
 - [ ] Configure security group rules (ingress/egress)
 
 ### EKS Cluster (Partial Terraform)
-- [ ] Review and update `eks-cluster-config.yaml`
-- [ ] Create EKS cluster using eksctl: `eksctl create cluster -f eks-cluster-config.yaml` (Skip if Terraform)
+- [ ] (Optional) Create EKS cluster manually with eksctl (Skip if Terraform):
+  ```bash
+  eksctl create cluster \
+    --name voting-app-cluster \
+    --region us-east-1 \
+    --version 1.32 \
+    --nodes 3 \
+    --node-type t3.medium \
+    --with-oidc
+  ```
 - [ ] Verify cluster creation: `kubectl get nodes`
 - [ ] Enable OIDC provider for the cluster (Manual)
 - [ ] Install AWS Load Balancer Controller (Manual)

@@ -4,14 +4,25 @@ metadata:
   name: voting-app-ingress
   namespace: voting-app
   annotations:
+    # Core ALB configuration
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/load-balancer-name: voting-app-alb
+    # Health check tuning (merged from advanced ingress)
     alb.ingress.kubernetes.io/healthcheck-path: /
-    # Enable sticky sessions for Socket.IO (result service needs session affinity)
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/success-codes: '200'
+    # Sticky sessions for Socket.IO (real-time stability)
     alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=86400
-    # Support WebSocket connections for Socket.IO
+    # Force HTTP/1 for WebSocket upgrade compatibility
     alb.ingress.kubernetes.io/backend-protocol-version: HTTP1
+    # Optional SSL (uncomment when ACM cert available)
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:ACCOUNT_ID:certificate/CERT_ID
+    # alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    # alb.ingress.kubernetes.io/ssl-redirect: '443'
 spec:
   ingressClassName: alb
   rules:
@@ -45,3 +56,9 @@ spec:
                 name: vote
                 port:
                   number: 8080
+
+# NOTE:
+# - This unified path-based ingress replaces the previous separate ingress variants.
+# - Host-based routing removed for simplicity; add 'host:' rules if DNS is configured.
+# - Remove load-balancer-name annotation if you prefer AWS-generated naming.
+# - Ensure only ONE ingress with this name is applied to avoid duplicate ALBs.

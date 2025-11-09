@@ -52,13 +52,24 @@ The ingress configuration is in `k8s-specifications/ingress-simple.yaml`:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: voting-app-ingress-simple
+  name: voting-app-ingress
+  namespace: voting-app
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-    # WebSocket support annotations
-    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=3600
+    alb.ingress.kubernetes.io/load-balancer-name: voting-app-alb
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/success-codes: '200'
+    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=86400
     alb.ingress.kubernetes.io/backend-protocol-version: HTTP1
+    # Optional HTTPS (uncomment when ACM cert ready)
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:ACCOUNT_ID:certificate/CERT_ID
+    # alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    # alb.ingress.kubernetes.io/ssl-redirect: '443'
 spec:
   ingressClassName: alb
   rules:
@@ -70,25 +81,36 @@ spec:
               service:
                 name: vote
                 port:
-                  number: 80
+                  number: 8080
           - path: /result
             pathType: Prefix
             backend:
               service:
                 name: result
                 port:
-                  number: 80
+                  number: 8081
+          - path: /static
+            pathType: Prefix
+            backend:
+              service:
+                name: vote
+                port:
+                  number: 8080
 ```
 
-**Key Annotations:**
-- `stickiness.enabled=true` - Required for Socket.IO session persistence
-- `stickiness.lb_cookie.duration_seconds=3600` - 1-hour sticky session
-- `backend-protocol-version: HTTP1` - Required for WebSocket upgrade support
+**Key Annotations (Explained):**
+- `alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true` – Required for Socket.IO session persistence
+- `stickiness.lb_cookie.duration_seconds=86400` – 24h cookie to keep long-lived WebSocket connections stable
+- `alb.ingress.kubernetes.io/backend-protocol-version: HTTP1` – Ensures proper WebSocket upgrade (HTTP/2 can cause intermittent upgrade failures)
+- Health check tuning (interval/timeouts/thresholds) – Faster recovery from failed pods
+- Optional HTTPS annotations – Commented until ACM certificate is provisioned
 
 **Routing:**
 ```
-http://ALB_DNS/vote   → Vote Service (HTTP)
-http://ALB_DNS/result → Result Service (HTTP + WebSocket)
+http://ALB_DNS/        → Vote Service root (if index exposed)
+http://ALB_DNS/vote    → Vote Service (HTTP)
+http://ALB_DNS/result  → Result Service (HTTP + WebSocket)
+http://ALB_DNS/static  → Vote static assets
 ```
 
 #### Socket.IO WebSocket Configuration
@@ -128,7 +150,7 @@ var socket = io({
 1. **Missing Sticky Sessions**
    ```bash
    # Check ingress annotations
-   kubectl describe ingress voting-app-ingress-simple -n voting-app | grep sticky
+  kubectl describe ingress voting-app-ingress -n voting-app | grep sticky
    ```
    
    **Fix:** Ensure `stickiness.enabled=true` in target-group-attributes
@@ -136,7 +158,7 @@ var socket = io({
 2. **HTTP/2 Protocol Conflicts**
    ```bash
    # Check backend protocol version
-   kubectl describe ingress voting-app-ingress-simple -n voting-app | grep protocol
+  kubectl describe ingress voting-app-ingress -n voting-app | grep protocol
    ```
    
    **Fix:** Set `backend-protocol-version: HTTP1`
@@ -161,7 +183,7 @@ var socket = io({
 
 ```bash
 # 1. Get ALB DNS
-export ALB_DNS=$(kubectl get ingress voting-app-ingress-simple -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+export ALB_DNS=$(kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
 # 2. Test HTTP endpoint
 curl -I http://${ALB_DNS}/result
@@ -225,13 +247,13 @@ kubectl apply -f k8s-specifications/result-service.yaml -n voting-app
 kubectl apply -f k8s-specifications/worker-deployment.yaml -n voting-app
 
 # 4. Apply Ingress
-kubectl apply -f k8s-specifications/ingress.yaml -n voting-app
+kubectl apply -f k8s-specifications/ingress-simple.yaml -n voting-app
 
 # 5. Wait for ALB to be provisioned (takes 2-3 minutes)
 kubectl get ingress -n voting-app -w
 
 # 6. Get ALB DNS name
-kubectl get ingress voting-app-ingress-paths -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 
 ## Accessing the Application
@@ -253,7 +275,7 @@ Result App: http://<ALB_DNS>/result
 Get the ALB DNS name:
 
 ```bash
-export ALB_DNS=$(kubectl get ingress voting-app-ingress-simple -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+export ALB_DNS=$(kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
 echo "Vote app: http://${ALB_DNS}/vote"
 echo "Result app: http://${ALB_DNS}/result"
@@ -356,21 +378,15 @@ kubectl describe ingress voting-app-ingress-paths -n voting-app
 aws ec2 describe-security-groups --filters "Name=tag:elbv2.k8s.aws/cluster,Values=voting-app-cluster"
 ```
 
-## Switching Between Ingress Types
+## Switching / Extending Ingress
 
-### Use Path-based (Default)
-```bash
-kubectl delete ingress voting-app-ingress -n voting-app
-# Keep voting-app-ingress-paths
-```
+The repository now standardizes on a single path-based ingress (`ingress-simple.yaml`). If you need host-based routing for custom domains:
 
-### Use Host-based
-```bash
-kubectl delete ingress voting-app-ingress-paths -n voting-app
-# Keep voting-app-ingress and configure DNS
-```
+1. Create a new file `k8s-specifications/ingress-host.yaml` with host rules.
+2. Add ACM certificate annotations and DNS records.
+3. Apply it separately (this will provision a second ALB → higher cost).
 
-Or deploy both and use different ALBs (will create 2 separate load balancers).
+Avoid modifying the unified file for experimental host routing—keep separation for clarity and rollback.
 
 ## Cost Considerations
 

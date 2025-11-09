@@ -72,55 +72,21 @@ aws ec2 create-security-group \
 
 ## Step 4: Create EKS Cluster
 
-### Using eksctl (Recommended)
+### Using eksctl (Optional Manual Path)
 
-Create a cluster configuration file `eks-cluster-config.yaml`:
-
-```yaml
-apiVersion: eksctl.io/v1alpha5
-kind: ClusterConfig
-
-metadata:
-  name: voting-app-cluster
-  region: us-east-1
-  version: "1.32"  # Updated cluster version
-
-vpc:
-  id: "<VPC_ID>"
-  subnets:
-    private:
-      us-east-1a:
-        id: "<PRIVATE_SUBNET_1_ID>"
-      us-east-1b:
-        id: "<PRIVATE_SUBNET_2_ID>"
-
-managedNodeGroups:
-  - name: voting-app-nodes
-    instanceType: t3.medium
-    desiredCapacity: 3
-    minSize: 2
-    maxSize: 5
-    privateNetworking: true
-    labels:
-      role: worker
-    tags:
-      Environment: production
-      Application: voting-app
-    iam:
-      withAddonPolicies:
-        imageBuilder: true
-        autoScaler: true
-        cloudWatch: true
-
-iam:
-  withOIDC: true
-```
-
-Create the cluster:
+You can create the cluster directly without a config file:
 
 ```bash
-eksctl create cluster -f eks-cluster-config.yaml
+eksctl create cluster \
+  --name voting-app-cluster \
+  --region us-east-1 \
+  --version 1.32 \
+  --nodes 3 \
+  --node-type t3.medium \
+  --with-oidc
 ```
+
+Add-ons like autoscaler, CloudWatch logging, and ALB controller can be installed post-creation.
 
 ### Update kubeconfig
 
@@ -432,7 +398,7 @@ kubectl get service result -n voting-app -o jsonpath='{.status.loadBalancer.ingr
 
 Path-based ALB ingress (`/vote`, `/result`):
 ```bash
-kubectl get ingress voting-app-ingress-simple -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 Test endpoints:
 ```bash
@@ -441,7 +407,7 @@ curl -I http://<ALB_DNS>/result
 ```
 Check Socket.IO support:
 ```bash
-kubectl describe ingress voting-app-ingress-simple -n voting-app | grep -E 'stickiness|HTTP1'
+kubectl describe ingress voting-app-ingress -n voting-app | grep -E 'stickiness|HTTP1'
 ```
 
 ## Step 15: Configure Service Exposure (Optional)

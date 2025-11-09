@@ -186,7 +186,7 @@ DependencyViolation: The subnet 'subnet-xxx' has dependencies and cannot be dele
 **Solution:**
 ```bash
 # 1. Delete ingress first (triggers ALB deletion)
-kubectl delete ingress voting-app-ingress-simple -n voting-app
+kubectl delete ingress voting-app-ingress -n voting-app
 
 # 2. Wait for ENI release (30-60 seconds)
 aws ec2 describe-network-interfaces --filters Name=subnet-id,Values=subnet-xxx
@@ -256,13 +256,13 @@ kubectl logs -f deployment/worker -n voting-app
 
 # Check ingress and ALB
 kubectl get ingress -n voting-app
-kubectl describe ingress voting-app-ingress-simple -n voting-app
+kubectl describe ingress voting-app-ingress -n voting-app
 
 # Get ALB DNS
-kubectl get ingress voting-app-ingress-simple -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 
 # Test application
-export ALB_DNS=$(kubectl get ingress voting-app-ingress-simple -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+export ALB_DNS=$(kubectl get ingress voting-app-ingress -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 curl -I http://${ALB_DNS}/vote
 curl -I http://${ALB_DNS}/result
 

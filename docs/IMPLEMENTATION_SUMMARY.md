@@ -301,7 +301,6 @@ example-voting-app/
 │   ├── redis-service.yaml             # Existing
 │   ├── vote-service.yaml              # Existing
 │   └── result-service.yaml            # Existing
-├── eks-cluster-config.yaml            # EKS cluster configuration
 ├── vote/                              # Existing
 ├── result/                            # Existing
 ├── worker/                            # Existing
