@@ -21,7 +21,8 @@ namespace Worker
                 var pgPort = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? "5432";
                 var pgUser = Environment.GetEnvironmentVariable("POSTGRES_USER") ?? "postgres";
                 var pgPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? "postgres";
-                var pgConnString = $"Host={pgHost};Port={pgPort};Username={pgUser};Password={pgPassword};Database=postgres;";
+                // RDS requires SSL, but we don't verify certificates in dev
+                var pgConnString = $"Host={pgHost};Port={pgPort};Username={pgUser};Password={pgPassword};Database=postgres;SslMode=Require;Trust Server Certificate=true;";
 
                 var redisHost = Environment.GetEnvironmentVariable("REDIS_HOST") ?? "redis";
                 var redisPort = Environment.GetEnvironmentVariable("REDIS_PORT") ?? "6379";

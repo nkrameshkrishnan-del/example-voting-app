@@ -47,6 +47,8 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
       # NOTE: EKS cluster lifecycle is now managed by Terraform. This workflow assumes the cluster already exists.
+      # NOTE: Application code (worker/result) is configured to use SSL for RDS PostgreSQL connections (required by AWS RDS).
+      # NOTE: ConfigMap postgres_host should NOT include the port - port is separate (postgres_port: 5432).
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v3

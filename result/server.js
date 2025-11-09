@@ -31,7 +31,10 @@ var connectionString = `postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTG
 console.log(`Connecting to Postgres at ${POSTGRES_HOST}:${POSTGRES_PORT}`);
 
 var pool = new Pool({
-  connectionString: connectionString
+  connectionString: connectionString,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 async.retry(
@@ -39,14 +42,14 @@ async.retry(
   function(callback) {
     pool.connect(function(err, client, done) {
       if (err) {
-        console.error("Waiting for db");
+        console.error("Waiting for db - Error:", err.message || err);
       }
       callback(err, client);
     });
   },
   function(err, client) {
     if (err) {
-      return console.error("Giving up");
+      return console.error("Giving up - Final error:", err.message || err);
     }
     console.log("Connected to db");
     getVotes(client);
