@@ -2,7 +2,7 @@
 
 ## Overview
 
-The voting app uses AWS Application Load Balancer (ALB) for ingress traffic routing via the AWS Load Balancer Controller.
+The voting app uses AWS Application Load Balancer (ALB) for ingress traffic routing via the AWS Load Balancer Controller. Path-based routing is used to serve both the vote and result applications from a single ALB.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ Internet
     ↓
 AWS ALB (Application Load Balancer)
     ↓
-Kubernetes Ingress Resource
+Kubernetes Ingress Resource (with WebSocket support)
     ↓
 ┌─────────────────┬─────────────────┐
 │  /vote path     │  /result path   │
@@ -19,8 +19,15 @@ Kubernetes Ingress Resource
     ↓                   ↓
 Vote Service        Result Service
     ↓                   ↓
-Vote Pods           Result Pods
+Vote Pods           Result Pods (Socket.IO WebSocket)
 ```
+
+## Key Features
+
+✅ **Path-based routing** - Single ALB serves both apps  
+✅ **WebSocket support** - Sticky sessions for Socket.IO  
+✅ **No DNS required** - Uses ALB DNS directly  
+✅ **Auto-provisioned** - ALB created automatically by controller
 
 ## Components
 
@@ -38,27 +45,147 @@ Vote Pods           Result Pods
 
 ### 2. Ingress Resources
 
-Two ingress configurations are provided in `k8s-specifications/ingress.yaml`:
+The ingress configuration is in `k8s-specifications/ingress-simple.yaml`:
 
-#### Option A: Host-based Routing (Multiple Domains)
+#### Path-based Routing with WebSocket Support
 ```yaml
-vote.voting-app.example.com  → Vote Service
-result.voting-app.example.com → Result Service
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: voting-app-ingress-simple
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # WebSocket support annotations
+    alb.ingress.kubernetes.io/target-group-attributes: stickiness.enabled=true,stickiness.lb_cookie.duration_seconds=3600
+    alb.ingress.kubernetes.io/backend-protocol-version: HTTP1
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /vote
+            pathType: Prefix
+            backend:
+              service:
+                name: vote
+                port:
+                  number: 80
+          - path: /result
+            pathType: Prefix
+            backend:
+              service:
+                name: result
+                port:
+                  number: 80
 ```
 
-**Requires:**
-- DNS records pointing to ALB
-- Optional: ACM SSL certificate
+**Key Annotations:**
+- `stickiness.enabled=true` - Required for Socket.IO session persistence
+- `stickiness.lb_cookie.duration_seconds=3600` - 1-hour sticky session
+- `backend-protocol-version: HTTP1` - Required for WebSocket upgrade support
 
-#### Option B: Path-based Routing (Single Domain) - **Default**
-```yaml
-http://ALB_DNS/vote   → Vote Service
-http://ALB_DNS/result → Result Service
+**Routing:**
+```
+http://ALB_DNS/vote   → Vote Service (HTTP)
+http://ALB_DNS/result → Result Service (HTTP + WebSocket)
 ```
 
-**No DNS required** - uses ALB DNS name directly
+#### Socket.IO WebSocket Configuration
 
-## Deployment
+The result service uses Socket.IO for real-time updates. Configuration requirements:
+
+**Server Side (result/server.js):**
+```javascript
+const io = socketIO(server, { 
+  path: '/result/socket.io'  // Custom path for ALB routing
+});
+```
+
+**Client Side (result/views/app.js):**
+```javascript
+var socket = io({ 
+  path: '/result/socket.io'  // Must match server path
+});
+```
+
+**Why This Is Needed:**
+- Default Socket.IO path is `/socket.io/`
+- ALB strips path prefix before forwarding
+- Custom path `/result/socket.io` ensures routing works correctly
+- Sticky sessions ensure WebSocket stays on same backend pod
+
+## WebSocket Troubleshooting
+
+## WebSocket Troubleshooting
+
+### Socket.IO Connection Failures
+
+**Symptom:** 400 Bad Request or WebSocket connection refused
+
+**Causes and Solutions:**
+
+1. **Missing Sticky Sessions**
+   ```bash
+   # Check ingress annotations
+   kubectl describe ingress voting-app-ingress-simple -n voting-app | grep sticky
+   ```
+   
+   **Fix:** Ensure `stickiness.enabled=true` in target-group-attributes
+
+2. **HTTP/2 Protocol Conflicts**
+   ```bash
+   # Check backend protocol version
+   kubectl describe ingress voting-app-ingress-simple -n voting-app | grep protocol
+   ```
+   
+   **Fix:** Set `backend-protocol-version: HTTP1`
+
+3. **Path Mismatch**
+   - Server and client Socket.IO paths must match
+   - Check browser console for connection errors
+   - Verify path is `/result/socket.io` in both server and client code
+
+4. **ALB Health Check Failures**
+   ```bash
+   # Check target health in AWS Console
+   aws elbv2 describe-target-health \
+     --target-group-arn $(aws elbv2 describe-target-groups \
+     --query 'TargetGroups[?contains(TargetGroupName,`result`)].TargetGroupArn' \
+     --output text)
+   ```
+   
+   **Fix:** Ensure result pods are healthy and responding to HTTP requests
+
+### Testing WebSocket Connection
+
+```bash
+# 1. Get ALB DNS
+export ALB_DNS=$(kubectl get ingress voting-app-ingress-simple -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+# 2. Test HTTP endpoint
+curl -I http://${ALB_DNS}/result
+
+# 3. Test Socket.IO endpoint in browser console
+# Open http://${ALB_DNS}/result in browser
+# Open Developer Tools > Console
+# Check for "connected" message or connection errors
+
+# 4. Monitor Socket.IO connections in pod logs
+kubectl logs -f deployment/result -n voting-app | grep socket.io
+```
+
+### Common Socket.IO Error Messages
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `400 Bad Request` | ALB rejecting WebSocket upgrade | Add HTTP1 protocol annotation |
+| `WebSocket connection failed` | No sticky sessions | Enable sticky sessions in target group |
+| `404 /socket.io/` | Path mismatch | Configure custom path `/result/socket.io` |
+| `Connection timeout` | Pod not ready | Check pod health and logs |
+| `Transport error` | Network/firewall issue | Check security groups |
+
+## Accessing the Application
 
 ### Via GitHub Actions CD Pipeline
 
@@ -109,39 +236,56 @@ kubectl get ingress voting-app-ingress-paths -n voting-app -o jsonpath='{.status
 
 ## Accessing the Application
 
-### Path-based Routing (Default)
+### Via GitHub Actions CD Pipeline (Recommended)
 
-Once the ALB is provisioned, get the DNS name:
+The CD workflow automatically displays access URLs in the deployment summary:
 
 ```bash
-export ALB_DNS=$(kubectl get ingress voting-app-ingress-paths -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# Workflow output includes:
+Vote App: http://<ALB_DNS>/vote
+Result App: http://<ALB_DNS>/result
+```
+
+### Manual Access
+
+### Manual Access
+
+Get the ALB DNS name:
+
+```bash
+export ALB_DNS=$(kubectl get ingress voting-app-ingress-simple -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
 echo "Vote app: http://${ALB_DNS}/vote"
 echo "Result app: http://${ALB_DNS}/result"
 ```
 
 Access in browser:
-- **Vote:** `http://<ALB_DNS>/vote`
-- **Result:** `http://<ALB_DNS>/result`
+- **Vote:** `http://<ALB_DNS>/vote` - Submit votes for Cats or Dogs
+- **Result:** `http://<ALB_DNS>/result` - Real-time results with Socket.IO updates
 
-### Host-based Routing (Optional)
+### Host-based Routing (Optional - Not Configured)
 
-If using host-based routing:
+If you want to use custom domains (vote.example.com, result.example.com):
 
-1. Get ALB DNS name:
-   ```bash
-   kubectl get ingress voting-app-ingress -n voting-app
-   ```
+1. Create a separate ingress with host-based rules
+2. Request ACM certificate for your domain
+3. Create DNS CNAME records pointing to ALB
+4. Update ingress with certificate ARN and host rules
 
-2. Create DNS CNAME records:
-   ```
-   vote.voting-app.example.com   → CNAME → <ALB_DNS>
-   result.voting-app.example.com → CNAME → <ALB_DNS>
-   ```
+See **SSL/HTTPS Setup** section below for ACM integration.
 
-3. Access via custom domains:
-   - `http://vote.voting-app.example.com`
-   - `http://result.voting-app.example.com`
+## Deployment
+
+### Via GitHub Actions CD Pipeline (Recommended)
+
+The CD workflow automatically:
+1. Installs AWS Load Balancer Controller via Helm
+2. Deploys application services
+3. Applies Ingress resource
+4. Waits for ALB provisioning (2-3 minutes)
+5. Displays ALB DNS and access URLs in deployment summary
+
+**No manual steps required** - just push to main branch or trigger workflow manually.
 
 ## SSL/HTTPS Setup (Optional)
 

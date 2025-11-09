@@ -1,6 +1,6 @@
-# AWS Infrastructure Setup for Voting App
+# AWS Infrastructure Setup for Voting App (Updated November 2025)
 
-This guide covers the setup of AWS infrastructure required to deploy the voting application on Amazon EKS with managed AWS services.
+This guide covers setting up AWS infrastructure for the voting application on Amazon EKS with managed AWS services. It reflects production lessons learned: RDS requires SSL/TLS, ElastiCache transit encryption with no AUTH token, Socket.IO WebSocket ingress configuration (sticky sessions + HTTP1), and linux/amd64 image builds.
 
 ## Prerequisites
 
@@ -13,13 +13,18 @@ This guide covers the setup of AWS infrastructure required to deploy the voting 
 ## Architecture Overview
 
 The application uses the following AWS services:
-- **Amazon EKS**: Kubernetes cluster for container orchestration
-- **Amazon ECR**: Container registry for Docker images
-- **Amazon ElastiCache (Redis)**: Managed Redis for vote queue
-- **Amazon RDS (PostgreSQL)**: Managed database for storing votes
-- **AWS IAM**: Identity and access management for OIDC authentication
+- **Amazon EKS 1.32**: Kubernetes cluster (IRSA currently disabled)
+- **Amazon ECR**: Container registry for Docker images (build with `--platform linux/amd64` on ARM Macs)
+- **Amazon ElastiCache (Redis 7.0)**: Managed Redis (transit encryption ON, AUTH token OFF)
+- **Amazon RDS (PostgreSQL 15)**: Managed database (SSL/TLS required)
+- **AWS ALB** (via Load Balancer Controller): Path-based routing + WebSocket support
+- **AWS IAM**: Access entries + optional OIDC/GitHub Actions federation
 
-## Step 1: Create ECR Repositories
+## Step 1: Prefer Terraform (Optional Manual Steps Below)
+
+Terraform in `terraform/` can provision everything automatically. Manual steps are retained here for reference.
+
+## Step 2: Create ECR Repositories
 
 Create three ECR repositories for the application components:
 
@@ -31,7 +36,7 @@ aws ecr create-repository --repository-name worker --region us-east-1
 
 Note the repository URIs from the output.
 
-## Step 2: Create VPC and Security Groups
+## Step 3: Create VPC and Security Groups (Skip if using Terraform)
 
 ### Create VPC (or use existing)
 
@@ -57,26 +62,15 @@ aws ec2 create-security-group \
 
 # Allow EKS nodes to access ElastiCache
 aws ec2 authorize-security-group-ingress \
-  --group-id <ELASTICACHE_SG_ID> \
-  --protocol tcp \
-  --port 6379 \
-  --source-group <EKS_NODE_SG_ID>
-
 # Security group for RDS
 aws ec2 create-security-group \
   --group-name rds-sg \
   --description "Security group for RDS PostgreSQL" \
-  --vpc-id <VPC_ID>
-
-# Allow EKS nodes to access RDS
-aws ec2 authorize-security-group-ingress \
-  --group-id <RDS_SG_ID> \
-  --protocol tcp \
   --port 5432 \
   --source-group <EKS_NODE_SG_ID>
 ```
 
-## Step 3: Create EKS Cluster
+## Step 4: Create EKS Cluster
 
 ### Using eksctl (Recommended)
 
@@ -89,7 +83,7 @@ kind: ClusterConfig
 metadata:
   name: voting-app-cluster
   region: us-east-1
-  version: "1.28"
+  version: "1.32"  # Updated cluster version
 
 vpc:
   id: "<VPC_ID>"
@@ -134,7 +128,27 @@ eksctl create cluster -f eks-cluster-config.yaml
 aws eks update-kubeconfig --name voting-app-cluster --region us-east-1
 ```
 
-## Step 4: Create ElastiCache Redis Cluster
+### Terraform Equivalent (Already Provisioned if You Ran `terraform apply`)
+
+If you used the Terraform configuration, the EKS cluster is created by the `module "eks"` block in `terraform/main.tf`:
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  cluster_name    = "voting-app-cluster"
+  cluster_version = "1.32"
+  enable_irsa     = false
+  # ...
+}
+```
+You can verify it exists without eksctl by checking outputs and listing clusters:
+```bash
+terraform output eks_cluster_name
+aws eks list-clusters --region us-east-1 | grep voting-app-cluster
+aws eks describe-cluster --name voting-app-cluster --region us-east-1 --query 'cluster.status'
+```
+If these commands return the cluster name and ACTIVE status, you can skip the manual eksctl steps above.
+
+## Step 5: Create ElastiCache Redis Cluster
 
 ### Create Subnet Group
 
@@ -145,7 +159,7 @@ aws elasticache create-cache-subnet-group \
   --subnet-ids <PRIVATE_SUBNET_1_ID> <PRIVATE_SUBNET_2_ID>
 ```
 
-### Create Redis Cluster
+### Create Redis Cluster (AUTH Disabled, Transit Encryption Enabled)
 
 ```bash
 aws elasticache create-cache-cluster \
@@ -158,8 +172,7 @@ aws elasticache create-cache-cluster \
   --security-group-ids <ELASTICACHE_SG_ID> \
   --preferred-availability-zone us-east-1a \
   --port 6379 \
-  --transit-encryption-enabled \
-  --auth-token "YourSecureAuthToken123!"
+  --transit-encryption-enabled
 ```
 
 **Note:** For production, consider using ElastiCache Replication Group for high availability.
@@ -174,7 +187,7 @@ aws elasticache describe-cache-clusters \
   --output text
 ```
 
-## Step 5: Create RDS PostgreSQL Database
+## Step 6: Create RDS PostgreSQL Database
 
 ### Create DB Subnet Group
 
@@ -214,7 +227,8 @@ aws rds describe-db-instances \
   --output text
 ```
 
-## Step 6: Set Up IAM OIDC Provider for GitHub Actions
+## Step 7: (Optional) Set Up IAM OIDC Provider for GitHub Actions
+If using Terraform with access entries you can defer this. Enable if adopting IRSA or GitHub OIDC federation.
 
 ### Create OIDC Provider
 
@@ -286,29 +300,15 @@ Create a custom policy for EKS access `eks-deploy-policy.json`:
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": [
-        "eks:DescribeCluster",
-        "eks:ListClusters"
       ],
       "Resource": "*"
-    }
-  ]
 }
 ```
-
 ```bash
 aws iam create-policy \
-  --policy-name EKSDeployPolicy \
-  --policy-document file://eks-deploy-policy.json
-
 aws iam attach-role-policy \
   --role-name GitHubActionsVotingAppRole \
   --policy-arn arn:aws:iam::<AWS_ACCOUNT_ID>:policy/EKSDeployPolicy
-```
-
-## Step 7: Configure Kubernetes RBAC for GitHub Actions
-
-Create a ClusterRole and ClusterRoleBinding:
 
 ```bash
 kubectl apply -f - <<EOF
@@ -351,7 +351,7 @@ Add the following under `mapRoles`:
     - system:masters
 ```
 
-## Step 8: Configure GitHub Secrets
+## Step 9: Configure GitHub Secrets
 
 Add the following secrets to your GitHub repository (Settings → Secrets and variables → Actions):
 
@@ -360,12 +360,11 @@ Add the following secrets to your GitHub repository (Settings → Secrets and va
 - `REDIS_AUTH_TOKEN`: ElastiCache AUTH token (if enabled)
 - `DB_PASSWORD`: RDS PostgreSQL password
 
-## Step 9: Update Kubernetes ConfigMap
+## Step 10: Update Kubernetes ConfigMap (Critical Structure)
 
 Update `k8s-specifications/configmap.yaml` with your actual endpoints:
 
 ```yaml
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: app-config
@@ -373,10 +372,11 @@ data:
   redis_host: "voting-app-redis.xxxxx.0001.use1.cache.amazonaws.com"
   redis_port: "6379"
   redis_ssl: "true"
-  postgres_host: "voting-app-db.xxxxx.us-east-1.rds.amazonaws.com"
+  postgres_host: "voting-app-db.xxxxx.us-east-1.rds.amazonaws.com"  # NO :5432 suffix
+  postgres_port: "5432"
 ```
 
-## Step 10: Create Kubernetes Secrets
+## Step 11: Create Kubernetes Secrets (Prefer External Secrets)
 
 ```bash
 kubectl create secret generic redis-secret \
@@ -397,7 +397,7 @@ helm repo add external-secrets https://charts.external-secrets.io
 helm install external-secrets external-secrets/external-secrets -n external-secrets-system --create-namespace
 ```
 
-## Step 11: Deploy Application
+## Step 12: Deploy Application
 
 Push code to the `main` branch to trigger the CI/CD pipeline:
 
@@ -411,7 +411,7 @@ The GitHub Actions workflows will:
 1. Build Docker images and push to ECR
 2. Deploy to EKS cluster
 
-## Step 12: Verify Deployment
+## Step 13: Verify Deployment
 
 ```bash
 # Check deployments
@@ -428,7 +428,23 @@ kubectl get service vote -n voting-app -o jsonpath='{.status.loadBalancer.ingres
 kubectl get service result -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 
-## Step 13: Configure Service Exposure (Optional)
+## Step 14: Ingress & WebSocket Verification
+
+Path-based ALB ingress (`/vote`, `/result`):
+```bash
+kubectl get ingress voting-app-ingress-simple -n voting-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+Test endpoints:
+```bash
+curl -I http://<ALB_DNS>/vote
+curl -I http://<ALB_DNS>/result
+```
+Check Socket.IO support:
+```bash
+kubectl describe ingress voting-app-ingress-simple -n voting-app | grep -E 'stickiness|HTTP1'
+```
+
+## Step 15: Configure Service Exposure (Optional)
 
 ### Option 1: Using LoadBalancer Service (Default)
 
@@ -498,13 +514,36 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm install prometheus prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
 ```
 
-## Cleanup
+## Cleanup (Order Matters)
 
 To avoid AWS charges, delete resources when no longer needed:
 
 ```bash
-# Delete EKS cluster
+### Teardown Sequence
+1. Delete ingress (ALB first to release ENIs)
+```bash
+kubectl delete ingress -n voting-app --all
+```
+2. Wait 30-60s for ALB ENIs to disappear
+3. Delete EKS cluster (if manually created)
+```bash
 eksctl delete cluster --name voting-app-cluster
+```
+4. Delete RDS (skip final snapshot only for non-prod)
+```bash
+aws rds delete-db-instance --db-instance-identifier voting-app-db --skip-final-snapshot
+```
+5. Delete ElastiCache
+```bash
+aws elasticache delete-cache-cluster --cache-cluster-id voting-app-redis
+```
+6. Delete ECR repos
+```bash
+aws ecr delete-repository --repository-name vote --force
+aws ecr delete-repository --repository-name result --force
+aws ecr delete-repository --repository-name worker --force
+```
+7. Remove SGs, subnet groups, VPC
 
 # Delete RDS instance
 aws rds delete-db-instance --db-instance-identifier voting-app-db --skip-final-snapshot
@@ -520,7 +559,7 @@ aws ecr delete-repository --repository-name worker --force
 # Delete security groups, subnet groups, and VPC
 ```
 
-## Troubleshooting
+## Troubleshooting (See `TROUBLESHOOTING_GUIDE.md` for complete guide)
 
 ### Pods not starting
 ```bash
@@ -528,10 +567,30 @@ kubectl describe pod <pod-name> -n voting-app
 kubectl logs <pod-name> -n voting-app
 ```
 
-### Cannot connect to Redis/RDS
-- Check security group rules
-- Verify endpoints in ConfigMap
-- Check secrets are created correctly
+### Cannot connect to RDS
+Error:
+```
+FATAL: no pg_hba.conf entry ... no encryption
+```
+Add SSL to application code:
+```javascript
+ssl: { rejectUnauthorized: false }
+```
+```csharp
+SslMode=Require;Trust Server Certificate=true;
+```
+
+### Redis AUTH errors
+- AUTH token disabled; remove REDIS_PASSWORD
+- Set `redis_ssl: "true"`
+- Strip empty password in app code
+
+### WebSocket failures (Socket.IO)
+- Ensure sticky sessions + HTTP1 ingress annotations
+- Path must be `/result/socket.io` on server & client
+
+### Exec format errors
+- Build container images for amd64: `docker build --platform linux/amd64`
 
 ### GitHub Actions failing
 - Verify AWS credentials and IAM role

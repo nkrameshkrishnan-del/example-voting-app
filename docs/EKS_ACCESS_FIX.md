@@ -14,6 +14,14 @@ This happens because the GitHub Actions IAM user/role isn't authorized to access
 - EKS only grants automatic admin access to the cluster creator
 - Additional IAM principals must be explicitly granted access
 
+### Modern Access Model vs Legacy aws-auth
+EKS (>=1.28) introduces *Access Entries* and *Access Policies* as a managed alternative to editing the `aws-auth` ConfigMap. This repository uses the modern Access Entries approach via Terraform. Avoid manual edits to `aws-auth` unless performing an emergency workaround.
+
+| Method | Recommended | Risks |
+|--------|-------------|-------|
+| Access Entries (API) | Yes | None (managed by EKS) |
+| aws-auth ConfigMap (legacy) | Only for migration | Drift, manual errors, unclear audit trail |
+
 ## Solution Steps
 
 ### Step 1: Identify GitHub Actions IAM User ARN
@@ -112,6 +120,143 @@ This grants the specified IAM principal cluster admin permissions, allowing it t
 - Deploy workloads
 - Manage cluster resources
 - Install Helm charts
+
+## Using an IAM Role with OIDC (Recommended for GitHub Actions)
+
+Instead of long-lived IAM user credentials, create an IAM role trusted by GitHub's OIDC provider.
+
+1. Create IAM role trust policy (`github-oidc-trust.json`):
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {"Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"},
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:sub": "repo:<ORG>/<REPO>:ref:refs/heads/main"
+        }
+      }
+    }
+  ]
+}
+```
+2. Create role (example):
+```bash
+aws iam create-role --role-name GitHubActionsVotingAppRole \
+  --assume-role-policy-document file://github-oidc-trust.json
+```
+3. Attach minimal policies (avoid full admin):
+```bash
+aws iam attach-role-policy --role-name GitHubActionsVotingAppRole --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+aws iam attach-role-policy --role-name GitHubActionsVotingAppRole --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+```
+4. Add role ARN to Terraform variable `github_actions_user_arn` (even though name implies user it can be a role).
+5. Terraform creates access entry mapping the role to cluster permissions.
+6. In GitHub Actions workflow set:
+```yaml
+permissions:
+  id-token: write
+  contents: read
+steps:
+  - name: Configure AWS credentials
+    uses: aws-actions/configure-aws-credentials@v4
+    with:
+      role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/GitHubActionsVotingAppRole
+      aws-region: us-east-1
+```
+
+## Listing and Managing Access Entries
+
+Commands to inspect current access configuration:
+```bash
+aws eks list-access-entries --cluster-name voting-app-cluster
+aws eks describe-access-entry --cluster-name voting-app-cluster --principal-arn <PRINCIPAL_ARN>
+aws eks list-access-policies
+```
+Associate a read-only policy to a principal (namespace scoped):
+```bash
+aws eks associate-access-policy \
+  --cluster-name voting-app-cluster \
+  --principal-arn <PRINCIPAL_ARN> \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy \
+  --access-scope type=namespace,namespace=voting-app
+```
+Detach a policy:
+```bash
+aws eks disassociate-access-policy --cluster-name voting-app-cluster --principal-arn <PRINCIPAL_ARN> --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy
+```
+
+## Enabling IRSA (Currently Disabled)
+
+IRSA (IAM Roles for Service Accounts) allows pods to assume IAM roles without node-wide privileges.
+
+Terraform currently sets `enable_irsa = false` for the EKS module. To enable:
+1. Edit `terraform/main.tf` module "eks": set `enable_irsa = true`.
+2. `terraform apply`.
+3. Create service account with role annotation (example for AWS Load Balancer Controller):
+```bash
+kubectl create serviceaccount aws-load-balancer-controller -n kube-system
+kubectl annotate serviceaccount aws-load-balancer-controller -n kube-system \
+  eks.amazonaws.com/role-arn=arn:aws:iam::<ACCOUNT_ID>:role/AWSLoadBalancerControllerRole
+```
+4. Reinstall controller Helm chart referencing that service account.
+
+Benefits of IRSA:
+- Eliminates need for broad node instance profile permissions.
+- Supports fine-grained least-privilege per component.
+- Improves auditability and reduces blast radius.
+
+## Migrating from aws-auth to Access Entries
+
+If legacy `aws-auth` mappings exist:
+1. List current config: `kubectl get configmap aws-auth -n kube-system -o yaml`
+2. Replicate each mapping with `aws eks create-access-entry` and `associate-access-policy`.
+3. Remove legacy mapRoles/mapUsers entries one at a time, verifying access persists.
+4. Keep a backup: `kubectl get configmap aws-auth -n kube-system -o yaml > aws-auth-backup.yaml`.
+
+## Extended Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---------|--------------|-----|
+| 403 Forbidden on kubectl | Principal lacks access policy | Add/associate access policy via EKS API |
+| 401 Unauthorized | Expired or wrong AWS credentials | Reissue OIDC token / rotate secrets |
+| "You must be logged in" | Missing access entry | Create access entry for principal ARN |
+| sts get-caller-identity returns different ARN | Wrong credentials in workflow | Update GitHub Actions secrets or role-to-assume |
+| Access entry exists but no permissions | Policy not associated | Associate cluster or namespace scope policy |
+| Helm install fails with IAM errors | IRSA not enabled for pod | Enable IRSA or attach node role permissions |
+
+Quick verification script:
+```bash
+aws sts get-caller-identity
+aws eks describe-cluster --name voting-app-cluster --query 'cluster.status'
+aws eks list-access-entries --cluster-name voting-app-cluster | jq '.accessEntries[] | {principalArn, accessPolicies}'
+kubectl auth can-i list pods -n voting-app
+```
+
+## Least Privilege Example
+
+For CI that only deploys to namespace `voting-app`:
+```bash
+aws eks associate-access-policy \
+  --cluster-name voting-app-cluster \
+  --principal-arn <PRINCIPAL_ARN> \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSDeveloperPolicy \
+  --access-scope type=namespace,namespace=voting-app
+```
+Then test:
+```bash
+kubectl auth can-i create deployment -n voting-app
+kubectl auth can-i create namespace other-namespace  # should be denied
+```
+
+## Summary
+- Prefer Access Entries over legacy `aws-auth` edits.
+- Use an OIDC-backed IAM role for GitHub Actions.
+- Enable IRSA for pod-level least privilege when needed.
+- Regularly audit access with `list-access-entries`.
 
 ## Security Note
 

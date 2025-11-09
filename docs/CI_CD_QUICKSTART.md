@@ -2,6 +2,8 @@
 
 This guide provides a quick overview of the CI/CD pipeline setup for deploying the Voting App to AWS EKS.
 
+> Key Runtime Requirements: RDS requires SSL, Redis AUTH is disabled (only TLS), Socket.IO path is `/result/socket.io`, images must build for `linux/amd64`, ConfigMap must separate `postgres_host` and `postgres_port`.
+
 ## Overview
 
 The CI/CD pipeline consists of two GitHub Actions workflows:
@@ -18,6 +20,8 @@ The CI/CD pipeline consists of two GitHub Actions workflows:
 - [ ] RDS PostgreSQL instance created (optional, for production)
 - [ ] IAM OIDC provider configured for GitHub Actions
 - [ ] GitHub repository secrets configured
+- [ ] ALB Ingress Controller installed (for ingress-based exposure)
+- [ ] Access Entry / RBAC mapping for GitHub Actions principal
 
 ## Required GitHub Secrets
 
@@ -33,6 +37,8 @@ Optional (if using AWS managed services):
 |-------------|-------------|
 | `REDIS_AUTH_TOKEN` | ElastiCache Redis AUTH token |
 | `DB_PASSWORD` | RDS PostgreSQL password |
+
+Note: Redis AUTH token is unused if AUTH disabled; omit the secret to avoid confusion.
 
 ## Quick Setup Steps
 
@@ -65,16 +71,15 @@ data:
   redis_port: "6379"
   redis_ssl: "true"
   postgres_host: "your-rds-endpoint.rds.amazonaws.com"
+  postgres_port: "5432"
 ```
 
-#### Create Secrets in Kubernetes
+#### Create Secrets in Kubernetes (If not using External Secrets Operator)
 
 ```bash
 kubectl create namespace voting-app
 
-kubectl create secret generic redis-secret \
-  --from-literal=password='your-redis-password' \
-  -n voting-app
+ # Skip redis-secret if Redis AUTH disabled
 
 kubectl create secret generic db-secret \
   --from-literal=username='postgres' \
@@ -161,6 +166,7 @@ graph LR
 3. Applies Kubernetes manifests
 4. Waits for deployment rollout to complete
 5. Displays service endpoints
+ 6. (Optional) Restarts `result` deployment after `worker` table creation (race mitigation)
 
 ## Monitoring Deployment
 
@@ -245,6 +251,27 @@ kubectl describe pod <pod-name> -n voting-app
 kubectl logs <pod-name> -n voting-app --previous
 ```
 
+**Problem:** Result UI not updating live
+```bash
+# Solution: Verify ingress annotations for WebSocket / sticky sessions
+kubectl describe ingress -n voting-app | grep -E 'alb.ingress.kubernetes.io/(sticky-session|backend-protocol-version|load-balancer-attributes)'
+# Ensure Socket.IO path matches /result/socket.io in server code
+kubectl logs deployment/result -n voting-app | grep socket.io
+```
+
+**Problem:** PostgreSQL SSL errors
+```bash
+# Solution: Confirm SSL mode enforced in app logs
+kubectl logs deployment/result -n voting-app | grep -i SSL
+kubectl logs deployment/worker -n voting-app | grep -i SSL
+```
+
+**Problem:** Redis AUTH failure
+```bash
+# Solution: Remove REDIS_PASSWORD from deployment env; confirm no AUTH attempts
+kubectl logs deployment/vote -n voting-app | grep -i redis
+```
+
 **Problem:** Cannot reach services
 ```bash
 # Solution: Check service and ingress configuration
@@ -260,6 +287,8 @@ kubectl describe svc vote -n voting-app
 | `CrashLoopBackOff` | App configuration error | Check environment variables and secrets |
 | `Pending` pods | Insufficient resources | Scale up node group or adjust resource requests |
 | `LoadBalancer pending` | Security group issue | Check VPC and subnet configuration |
+| No real-time updates | Missing ingress WebSocket annotations | Add ALB annotations & restart result |
+| DB connectivity retries | Incorrect host/port or SSL missing | Fix ConfigMap splitting host/port, enforce SSL |
 
 ## Manual Deployment
 
@@ -356,3 +385,7 @@ kubectl autoscale deployment result --cpu-percent=70 --min=2 --max=5 -n voting-a
 - [GitHub Actions Documentation](https://docs.github.com/en/actions)
 - [Kubernetes Documentation](https://kubernetes.io/docs/)
 - Full setup guide: See `docs/AWS_SETUP.md`
+- Manual testing path: See `docs/MANUAL_DEPLOYMENT.md`
+- Access configuration: See `docs/EKS_ACCESS_FIX.md`
+- Secrets handling: See `docs/EXTERNAL_SECRETS.md`
+- Ingress / WebSockets: See `docs/INGRESS_SETUP.md`

@@ -2,6 +2,26 @@
 
 Use this checklist to ensure all steps are completed before deploying the Voting App to AWS EKS.
 
+## Terraform Coverage Summary
+
+| Section | Terraform Coverage | Manual Items Remaining |
+|---------|--------------------|------------------------|
+| ECR Repositories | Full (repos created) | Verify URIs, permissions |
+| Networking (VPC, Subnets, SGs) | Full | Review CIDRs & SG rules |
+| EKS Cluster | Core cluster provisioned | OIDC provider, ALB Controller install, Metrics Server |
+| ElastiCache (Redis) | Cluster + SG if enabled | AUTH decision, connectivity test |
+| RDS (PostgreSQL) | Instance + SG if enabled | Password rotation, connectivity & SSL verify |
+| IAM (GitHub Actions Role) | None | Create role, trust policy, RBAC mapping |
+| GitHub Repo Secrets | None | Add secrets to repository |
+| Kubernetes Manifests | None | Apply ConfigMap, Secrets, Deployments, Ingress |
+| Ingress / ALB | Part (IAM for controller) | Helm install controller, apply ingress YAML |
+| Monitoring Stack | None | Install Prometheus/Grafana/CloudWatch setup |
+
+Badge Legend:
+`(Skip if Terraform)` – Step fully handled by Terraform.
+`(Partial Terraform)` – Some resources created; complete remaining manual tasks.
+`(Manual)` – Fully manual.
+
 ## Phase 1: Prerequisites
 
 - [ ] AWS Account with appropriate permissions
@@ -14,13 +34,13 @@ Use this checklist to ensure all steps are completed before deploying the Voting
 
 ## Phase 2: AWS Infrastructure Setup
 
-### ECR Repositories
+### ECR Repositories (Skip if Terraform)
 - [ ] Create ECR repository for `vote` service
 - [ ] Create ECR repository for `result` service
 - [ ] Create ECR repository for `worker` service
 - [ ] Note down ECR repository URIs
 
-### Networking
+### Networking (Skip if Terraform)
 - [ ] Create or identify VPC for EKS
 - [ ] Create or identify private subnets (minimum 2 AZs)
 - [ ] Create or identify public subnets (minimum 2 AZs)
@@ -29,15 +49,15 @@ Use this checklist to ensure all steps are completed before deploying the Voting
 - [ ] Create security group for RDS
 - [ ] Configure security group rules (ingress/egress)
 
-### EKS Cluster
+### EKS Cluster (Partial Terraform)
 - [ ] Review and update `eks-cluster-config.yaml`
-- [ ] Create EKS cluster using eksctl: `eksctl create cluster -f eks-cluster-config.yaml`
+- [ ] Create EKS cluster using eksctl: `eksctl create cluster -f eks-cluster-config.yaml` (Skip if Terraform)
 - [ ] Verify cluster creation: `kubectl get nodes`
-- [ ] Enable OIDC provider for the cluster
-- [ ] Install AWS Load Balancer Controller (optional)
-- [ ] Install Metrics Server (for auto-scaling)
+- [ ] Enable OIDC provider for the cluster (Manual)
+- [ ] Install AWS Load Balancer Controller (Manual)
+- [ ] Install Metrics Server (Manual)
 
-### ElastiCache (Redis)
+### ElastiCache (Redis) (Partial Terraform)
 - [ ] Create ElastiCache subnet group
 - [ ] Create Redis cluster or replication group
 - [ ] Enable AUTH token (recommended for production)
@@ -45,7 +65,7 @@ Use this checklist to ensure all steps are completed before deploying the Voting
 - [ ] Note down Redis endpoint
 - [ ] Test connectivity from EKS nodes
 
-### RDS (PostgreSQL)
+### RDS (PostgreSQL) (Partial Terraform)
 - [ ] Create RDS subnet group
 - [ ] Create PostgreSQL instance
 - [ ] Configure master username and password
@@ -56,11 +76,11 @@ Use this checklist to ensure all steps are completed before deploying the Voting
 
 ## Phase 3: IAM Configuration
 
-### OIDC Provider for GitHub Actions
+### OIDC Provider for GitHub Actions (Manual)
 - [ ] Create OIDC provider for GitHub Actions
 - [ ] Note down OIDC provider ARN
 
-### IAM Role for GitHub Actions
+### IAM Role for GitHub Actions (Manual)
 - [ ] Create trust policy JSON file
 - [ ] Update trust policy with your GitHub org/repo
 - [ ] Create IAM role: `GitHubActionsVotingAppRole`
@@ -69,7 +89,7 @@ Use this checklist to ensure all steps are completed before deploying the Voting
 - [ ] Create and attach custom EKS deploy policy
 - [ ] Note down role ARN
 
-### Kubernetes RBAC
+### Kubernetes RBAC (Manual)
 - [ ] Create ClusterRole for GitHub Actions
 - [ ] Create ClusterRoleBinding
 - [ ] Update `aws-auth` ConfigMap with IAM role mapping
@@ -77,13 +97,13 @@ Use this checklist to ensure all steps are completed before deploying the Voting
 
 ## Phase 4: GitHub Configuration
 
-### Repository Secrets
+### Repository Secrets (Manual)
 - [ ] Add `AWS_ACCOUNT_ID` secret
 - [ ] Add `AWS_ROLE_ARN` secret
 - [ ] Add `REDIS_AUTH_TOKEN` secret (if using AUTH)
 - [ ] Add `DB_PASSWORD` secret
 
-### Workflow Files
+### Workflow Files (Manual)
 - [ ] Review `.github/workflows/ci-build-push.yml`
 - [ ] Update AWS region if needed
 - [ ] Review `.github/workflows/cd-deploy-eks.yml`
@@ -92,11 +112,11 @@ Use this checklist to ensure all steps are completed before deploying the Voting
 
 ## Phase 5: Kubernetes Configuration
 
-### Namespace
+### Namespace (Manual)
 - [ ] Create namespace: `kubectl create namespace voting-app`
 - [ ] Set as default (optional): `kubectl config set-context --current --namespace=voting-app`
 
-### ConfigMap
+### ConfigMap (Manual)
 - [ ] Update `k8s-specifications/configmap.yaml` with actual endpoints
   - [ ] Redis endpoint
   - [ ] Redis port
@@ -105,7 +125,7 @@ Use this checklist to ensure all steps are completed before deploying the Voting
 - [ ] Apply ConfigMap: `kubectl apply -f k8s-specifications/configmap.yaml -n voting-app`
 - [ ] Verify: `kubectl get configmap app-config -n voting-app -o yaml`
 
-### Secrets
+### Secrets (Manual)
 - [ ] Create Redis secret:
   ```bash
   kubectl create secret generic redis-secret \
@@ -121,7 +141,7 @@ Use this checklist to ensure all steps are completed before deploying the Voting
   ```
 - [ ] Verify secrets created: `kubectl get secrets -n voting-app`
 
-### Service Configuration (Optional)
+### Service Configuration (Optional, Manual)
 - [ ] Review `k8s-specifications/vote-service.yaml`
 - [ ] Review `k8s-specifications/result-service.yaml`
 - [ ] Update service types if needed (LoadBalancer/NodePort/ClusterIP)
@@ -129,13 +149,13 @@ Use this checklist to ensure all steps are completed before deploying the Voting
 
 ## Phase 6: Initial Deployment
 
-### Manual Build and Push (Optional)
+### Manual Build and Push (Optional, Manual)
 - [ ] Test build locally for vote service
 - [ ] Test build locally for result service
 - [ ] Test build locally for worker service
 - [ ] Manually push to ECR (optional, for testing)
 
-### Trigger CI/CD Pipeline
+### Trigger CI/CD Pipeline (Manual)
 - [ ] Commit all changes
 - [ ] Push to feature branch for testing
 - [ ] Create pull request to main
