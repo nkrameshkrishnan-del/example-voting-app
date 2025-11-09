@@ -40,6 +40,7 @@ ECR_REPOS=(
   voting-app/worker
   voting-app/voter
   voting-app/seed-data
+  voting-app/vote
 )
 DO_K8S=0
 DO_CLUSTER=0
