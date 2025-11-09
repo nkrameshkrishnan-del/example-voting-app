@@ -35,7 +35,12 @@ IFS=$'\n\t'
 AWS_REGION="${AWS_REGION:-us-east-1}"
 CLUSTER_NAME="${EKS_CLUSTER_NAME:-voting-app-cluster}"
 NAMESPACE="voting-app"
-ECR_REPOS=(vote result worker)
+ECR_REPOS=(
+  voting-app/result
+  voting-app/worker
+  voting-app/voter
+  voting-app/seed-data
+)
 DO_K8S=0
 DO_CLUSTER=0
 DO_ECR=0
