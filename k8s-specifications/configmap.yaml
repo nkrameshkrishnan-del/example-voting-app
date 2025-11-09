@@ -9,4 +9,6 @@ data:
   redis_ssl: "true"  # set to false if ElastiCache not using in-transit encryption
 
   # AWS RDS PostgreSQL endpoint (set actual endpoint hostname)
-  postgres_host: "voting-app-dev-pg.curq228s8eze.us-east-1.rds.amazonaws.com:5432"
+  # IMPORTANT: Do not include port here; separate key provided below
+  postgres_host: "voting-app-dev-pg.curq228s8eze.us-east-1.rds.amazonaws.com"
+  postgres_port: "5432"
