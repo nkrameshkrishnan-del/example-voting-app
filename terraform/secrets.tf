@@ -1,5 +1,12 @@
 # AWS Secrets Manager secrets for voting app credentials
 
+locals {
+  # Workaround for Terraform crash involving marked (sensitive) values inside jsonencode + conditional.
+  # We explicitly unmark (nonsensitive) before jsonencode to avoid go-cty mark assertion during destroy.
+  redis_auth_effective = var.redis_auth_token != "" ? nonsensitive(var.redis_auth_token) : "CHANGEME-redis-auth-token"
+  rds_password_effective = nonsensitive(var.rds_password)
+}
+
 resource "aws_secretsmanager_secret" "redis_auth" {
   count                   = var.create_redis ? 1 : 0
   name                    = "${local.name_prefix}/redis/auth-token"
@@ -12,7 +19,7 @@ resource "aws_secretsmanager_secret_version" "redis_auth" {
   count     = var.create_redis ? 1 : 0
   secret_id = aws_secretsmanager_secret.redis_auth[0].id
   secret_string = jsonencode({
-    password = var.redis_auth_token != "" ? var.redis_auth_token : "CHANGEME-redis-auth-token"
+    password = local.redis_auth_effective
   })
 }
 
@@ -29,7 +36,7 @@ resource "aws_secretsmanager_secret_version" "rds_credentials" {
   secret_id = aws_secretsmanager_secret.rds_credentials[0].id
   secret_string = jsonencode({
     username = var.rds_username
-    password = var.rds_password
+    password = local.rds_password_effective
     host     = aws_db_instance.postgres[0].address
     port     = aws_db_instance.postgres[0].port
     dbname   = aws_db_instance.postgres[0].db_name
