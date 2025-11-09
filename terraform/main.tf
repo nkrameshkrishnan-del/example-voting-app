@@ -1,3 +1,18 @@
+# Voting App Infrastructure - Main Configuration
+# This Terraform config provisions:
+# - VPC with public/private subnets
+# - EKS 1.32 cluster with managed node groups
+# - RDS PostgreSQL 15 (SSL required)
+# - ElastiCache Redis 7.0 (transit encryption, no AUTH)
+# - ECR repositories with lifecycle policies
+# - IAM policies for ALB Controller and External Secrets Operator
+#
+# EKS Access Control:
+# - Cluster creator (IAM principal running terraform apply) gets automatic admin access
+# - Additional users/roles can be granted access via var.additional_access_entries
+# - DO NOT add cluster creator to additional_access_entries (causes 409 conflict)
+# See: terraform/EKS_ACCESS_MANAGEMENT.md for detailed guidance
+
 locals {
   name_prefix = "${var.prefix}-${var.environment}"
 }
@@ -51,24 +66,46 @@ module "eks" {
   # IRSA (OIDC) disabled per request to avoid OIDC usage; workloads must use node role or static creds
   enable_irsa = false
 
-  # Grant cluster admin access to additional IAM users/roles (e.g., GitHub Actions)
-  # Add your GitHub Actions IAM user ARN here
-  enable_cluster_creator_admin_permissions = true
+  # Disable automatic cluster creator access entry to avoid 409 conflicts
+  # We'll manage all access entries explicitly below
+  enable_cluster_creator_admin_permissions = false
   
-  access_entries = var.github_actions_user_arn != "" ? {
-    github_actions = {
-      principal_arn = var.github_actions_user_arn
-      type          = "STANDARD"
-      policy_associations = {
-        admin = {
-          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-          access_scope = {
-            type = "cluster"
+  # Manage all EKS access entries explicitly
+  # This includes the Terraform executor (cluster creator) and any additional users
+  access_entries = merge(
+    # Cluster creator / Terraform executor
+    var.enable_cluster_creator_access ? {
+      cluster_creator = {
+        principal_arn = data.aws_caller_identity.current.arn
+        type          = "STANDARD"
+        policy_associations = {
+          admin = {
+            policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+            access_scope = {
+              type = "cluster"
+            }
           }
         }
       }
+    } : {},
+    # Additional users from variable
+    {
+      for idx, entry in var.additional_access_entries : 
+        "additional_user_${idx}" => {
+          principal_arn = entry.principal_arn
+          type          = lookup(entry, "type", "STANDARD")
+          policy_associations = lookup(entry, "kubernetes_groups", null) == null ? {
+            admin = {
+              policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+              access_scope = {
+                type = "cluster"
+              }
+            }
+          } : {}
+          kubernetes_groups = lookup(entry, "kubernetes_groups", null)
+        }
     }
-  } : {}
+  )
 
   eks_managed_node_groups = {
     default = {

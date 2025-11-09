@@ -4,7 +4,7 @@ on:
     workflow_dispatch:
         inputs:
             scope:
-                description: "What to destroy: all | k8s | cluster | ecr | combo (comma-separated)"
+                description: "What to destroy: all | k8s | cluster | ecr | terraform (comma-separated)"
                 required: true
                 default: "all"
             rds_id:
@@ -75,6 +75,7 @@ jobs:
               run: |
                   FLAGS=""
                   SCOPE="${{ steps.scope.outputs.scope_clean }}"
+                  TF_FLAG="false"
                   if [[ "$SCOPE" == "all" ]]; then FLAGS="--all"; else
                     IFS=',' read -ra PARTS <<< "$SCOPE"
                     for part in "${PARTS[@]}"; do
@@ -82,6 +83,7 @@ jobs:
                         k8s) FLAGS+=" --k8s" ;;
                         cluster) FLAGS+=" --cluster" ;;
                         ecr) FLAGS+=" --ecr" ;;
+                        terraform) TF_FLAG="true" ;;
                         *) echo "Ignoring unknown scope entry: $part" ;;
                       esac
                     done
@@ -92,15 +94,43 @@ jobs:
                   if [[ "${{ github.event.inputs.force }}" == "true" ]]; then FLAGS+=" --force"; fi
                   if [[ "${{ github.event.inputs.region_override }}" != "" ]]; then FLAGS+=" --region ${{ github.event.inputs.region_override }}"; fi
                   echo "flags=$FLAGS" >> $GITHUB_OUTPUT
-                  echo "Final flags: $FLAGS"
+                  echo "terraform=$TF_FLAG" >> $GITHUB_OUTPUT
+                  echo "Final flags: $FLAGS (terraform destroy requested: $TF_FLAG)"
 
-            - name: Destroy infrastructure
+            - name: Destroy infrastructure (script)
               env:
                   AWS_REGION: ${{ github.event.inputs.region_override || env.AWS_REGION }}
                   EKS_CLUSTER_NAME: ${{ env.EKS_CLUSTER_NAME }}
               run: |
                   echo "Running destruction with flags: ${{ steps.flags.outputs.flags }}"
                   ./scripts/destroy-infra.sh ${{ steps.flags.outputs.flags }}
+
+            - name: Setup Terraform
+              if: steps.flags.outputs.terraform == 'true'
+              uses: hashicorp/setup-terraform@v2
+              with:
+                  terraform_version: 1.6.0
+
+            - name: Terraform destroy (optional)
+              if: steps.flags.outputs.terraform == 'true'
+              env:
+                  AWS_REGION: ${{ github.event.inputs.region_override || env.AWS_REGION }}
+                  EKS_CLUSTER_NAME: ${{ env.EKS_CLUSTER_NAME }}
+              run: |
+                  echo "Terraform destroy requested. Preparing..."
+                  aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" || echo "(kubeconfig update failed; cluster may already be gone)"
+                  kubectl delete ingress voting-app-ingress -n voting-app --ignore-not-found || true
+                  echo "Waiting 30s for ALB ENIs to detach..."
+                  sleep 30
+                  cd terraform
+                  terraform init -input=false
+                  if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+                    echo "Dry run enabled - showing destroy plan only."
+                    terraform plan -destroy -var=environment=dev || true
+                  else
+                    terraform destroy -auto-approve -var=environment=dev || true
+                  fi
+                  echo "Terraform phase complete."
 
             - name: Summary
               if: always()
@@ -113,3 +143,4 @@ jobs:
                   echo "Dry run: ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
                   echo "Force: ${{ github.event.inputs.force }}" >> $GITHUB_STEP_SUMMARY
                   echo "Flags: ${{ steps.flags.outputs.flags }}" >> $GITHUB_STEP_SUMMARY
+                  echo "Terraform requested: ${{ steps.flags.outputs.terraform }}" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,42 @@
+# Example terraform.tfvars configuration
+# Copy this to terraform.tfvars and customize for your environment
+
+# Basic configuration
+environment = "dev"
+region      = "us-east-1"
+
+# EKS Access Configuration
+# The cluster creator (IAM identity running `terraform apply`) automatically gets admin access
+# Use additional_access_entries ONLY for principals DIFFERENT from the cluster creator
+
+# Example 1: Empty (no additional users beyond cluster creator)
+# additional_access_entries = []
+
+# Example 2: Add a separate GitHub Actions user/role
+# additional_access_entries = [
+#   {
+#     principal_arn = "arn:aws:iam::703288805584:user/github-actions-ci"
+#     type          = "STANDARD"
+#   }
+# ]
+
+# Example 3: Add multiple users with different permissions
+# additional_access_entries = [
+#   {
+#     principal_arn = "arn:aws:iam::703288805584:user/github-actions-ci"
+#   },
+#   {
+#     principal_arn     = "arn:aws:iam::703288805584:role/developer-role"
+#     kubernetes_groups = ["developers"]  # Custom RBAC group
+#   }
+# ]
+
+# Database configuration
+rds_password = "changeme123!"  # Change this! Use TF_VAR_rds_password env var for security
+
+# Tags
+tags = {
+  Project     = "voting-app"
+  Environment = "dev"
+  ManagedBy   = "terraform"
+}

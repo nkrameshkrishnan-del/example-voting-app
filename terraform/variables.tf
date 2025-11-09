@@ -127,9 +127,39 @@ variable "ecr_enable_lifecycle" {
 }
 
 variable "github_actions_user_arn" {
-  description = "IAM user or role ARN for GitHub Actions to access EKS cluster. Example: arn:aws:iam::123456789012:user/github-actions"
+  description = "IAM user or role ARN for GitHub Actions to access EKS cluster. Example: arn:aws:iam::123456789012:user/github-actions. DEPRECATED: Use additional_access_entries instead to avoid cluster creator conflicts."
   type        = string
-  default     = "arn:aws:iam::703288805584:user/root_admin"
+  default     = ""
+}
+
+variable "additional_access_entries" {
+  description = <<-EOT
+    List of additional IAM principals (users/roles) to grant EKS cluster access.
+    Each entry should be DIFFERENT from the cluster creator to avoid conflicts.
+    Example:
+    [
+      {
+        principal_arn = "arn:aws:iam::123456789012:user/github-actions"
+        type          = "STANDARD"  # Optional, defaults to STANDARD
+      },
+      {
+        principal_arn = "arn:aws:iam::123456789012:role/developer-role"
+        kubernetes_groups = ["system:masters"]  # Optional, for custom RBAC
+      }
+    ]
+  EOT
+  type = list(object({
+    principal_arn     = string
+    type              = optional(string)
+    kubernetes_groups = optional(list(string))
+  }))
+  default = []
+}
+
+variable "enable_cluster_creator_access" {
+  description = "Whether to create an access entry for the IAM identity running terraform apply. Set to false if the cluster creator already has access or to manage manually."
+  type        = bool
+  default     = true
 }
 
 variable "tags" {

@@ -75,7 +75,54 @@ aws eks update-kubeconfig --name voting-app-cluster --region us-east-1
 - **Version**: 1.32
 - **Node Group**: 2-4 nodes (t3.medium)
 - **IRSA**: Disabled (nodes use IAM instance profile)
-- **Access**: Cluster creator (enable_cluster_creator_admin_permissions=true) and configured GitHub Actions user have admin access
+- **Access Control**: 
+  - Cluster creator (IAM identity running `terraform apply`) automatically gets admin access
+  - Additional users/roles can be added via `additional_access_entries` variable
+  - **Important**: Do NOT add the cluster creator to `additional_access_entries` (causes 409 conflict)
+
+## EKS Access Management
+
+### Automatic Cluster Creator Access
+When you run `terraform apply`, the IAM principal (user/role) executing the command automatically receives admin access to the cluster via `enable_cluster_creator_admin_permissions = true`. This principal is added to the cluster's access entries automatically.
+
+### Adding Additional Users/Roles
+To grant access to **additional** IAM principals (e.g., CI/CD users, developers), use the `additional_access_entries` variable:
+
+```hcl
+# In terraform.tfvars or -var flag
+additional_access_entries = [
+  {
+    principal_arn = "arn:aws:iam::703288805584:user/github-actions-ci"
+    type          = "STANDARD"  # Optional, defaults to STANDARD
+  },
+  {
+    principal_arn     = "arn:aws:iam::703288805584:role/developer-role"
+    kubernetes_groups = ["developers"]  # Optional, for custom RBAC
+  }
+]
+```
+
+**Important**: Only add principals that are **different** from the cluster creator. Adding the same principal twice will cause a `409 ResourceInUseException` error.
+
+### Checking Current Access Entries
+```bash
+aws eks list-access-entries --cluster-name voting-app-cluster --region us-east-1
+```
+
+### Migration from github_actions_user_arn
+The old `github_actions_user_arn` variable is deprecated. If you were using it and it matches the cluster creator ARN, remove it and rely on automatic cluster creator access. If it's a different user, migrate to `additional_access_entries`:
+
+```hcl
+# Old (deprecated)
+github_actions_user_arn = "arn:aws:iam::123456789012:user/ci-user"
+
+# New (recommended)
+additional_access_entries = [
+  {
+    principal_arn = "arn:aws:iam::123456789012:user/ci-user"
+  }
+]
+```
 
 ## Variables
 Key configuration variables:
@@ -86,7 +133,8 @@ Key configuration variables:
 - `create_redis` – Enable ElastiCache Redis (default: true)
 - `rds_password` – RDS master password (default: "changeme123!" - **change for production**)
 - `redis_auth_token` – Redis AUTH token (default: "" - disabled)
-- `github_actions_user_arn` – IAM user/role ARN for EKS cluster access (default: configured)
+- `additional_access_entries` – List of additional IAM principals for EKS access (default: [])
+- `github_actions_user_arn` – **DEPRECATED** - use `additional_access_entries` instead
 - `enable_nat_gateway` / `single_nat_gateway` – NAT gateway configuration (default: true/true)
 - `ecr_repositories` – List of ECR repo names (default: ["vote", "result", "worker", "seed-data"])
 
